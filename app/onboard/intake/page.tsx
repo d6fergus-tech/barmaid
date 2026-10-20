@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useMemo, ChangeEvent } from "react";
+import React, { useState, useRef, useMemo, ChangeEvent, DragEvent, MouseEvent } from "react";
 import Link from "next/link";
 import type {
   InvoiceOcrResponse,
@@ -16,6 +16,7 @@ interface UploadedAsset {
   zone: DropzoneKey;
   fileName: string;
   fileSize: number;
+  mimeType: string;
   previewUrl: string;
   status: "processing" | "ready" | "error";
   errorMessage?: string;
@@ -137,6 +138,10 @@ function formatCents(cents?: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+function formatFileCountBadge(count: number): string {
+  return `${count} ${count === 1 ? "File" : "Files"}`;
+}
+
 export default function MultiSourceIntakeStagingPage() {
   // Multi-file upload state per dropzone
   const [licenseFiles, setLicenseFiles] = useState<UploadedAsset[]>([]);
@@ -159,109 +164,128 @@ export default function MultiSourceIntakeStagingPage() {
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [handoffSuccess, setHandoffSuccess] = useState<boolean>(false);
 
-  // Hidden input refs
+  // Hidden native file input refs
   const licenseInputRef = useRef<HTMLInputElement>(null);
   const menuInputRef = useRef<HTMLInputElement>(null);
   const invoiceInputRef = useRef<HTMLInputElement>(null);
 
-  const readFilePreview = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (ev) => resolve((ev.target?.result as string) || "");
-      reader.onerror = () => reject(new Error("Failed to read file preview"));
-      reader.readAsDataURL(file);
-    });
+  // Active processing flags per zone for card-level spinner feedback
+  const isLicenseAnalyzing = useMemo(
+    () => licenseFiles.some((f) => f.status === "processing"),
+    [licenseFiles]
+  );
+  const isMenuAnalyzing = useMemo(
+    () => menuFiles.some((f) => f.status === "processing"),
+    [menuFiles]
+  );
+  const isInvoiceAnalyzing = useMemo(
+    () => invoiceFiles.some((f) => f.status === "processing"),
+    [invoiceFiles]
+  );
 
-  // Dropzone 1: Business License Upload Handler
-  const handleLicenseUpload = async (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
-    e.target.value = "";
+  // Core processor for Dropzone 1: Business License (Single File)
+  const processLicenseFiles = async (files: File[]) => {
+    const file = files[0];
+    if (!file) return;
 
-    for (const file of files) {
-      const assetId = `lic_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const previewUrl = await readFilePreview(file);
+    const assetId = `lic_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const previewUrl = URL.createObjectURL(file);
 
-      const newAsset: UploadedAsset = {
-        id: assetId,
-        zone: "license",
-        fileName: file.name,
-        fileSize: file.size,
-        previewUrl,
-        status: "processing",
-      };
+    const newAsset: UploadedAsset = {
+      id: assetId,
+      zone: "license",
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType: file.type || "image/jpeg",
+      previewUrl,
+      status: "processing",
+    };
 
-      setLicenseFiles((prev) => [...prev, newAsset]);
-      setStatusBanner(`Extracting Business Identity from "${file.name}"...`);
-
-      try {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("documentType", "license");
-
-        const res = await fetch("/api/ocr", {
-          method: "POST",
-          body: formData,
-        });
-        const json = (await res.json()) as LicenseOcrApiResponse;
-
-        if (!res.ok || !json.data) {
-          throw new Error(json.error || "License OCR failed");
+    // Single file for Dropzone 1: replace previous license preview and revoke old URL
+    setLicenseFiles((prev) => {
+      prev.forEach((old) => {
+        if (old.previewUrl.startsWith("blob:")) {
+          URL.revokeObjectURL(old.previewUrl);
         }
+      });
+      return [newAsset];
+    });
+    setStatusBanner(`Extracting Business Identity from "${file.name}"...`);
 
-        const extracted = json.data;
-        const dba = extracted.dbaName?.trim() || storeIdentity.dbaName;
-        const legal = extracted.legalName?.trim() || storeIdentity.legalName;
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("documentType", "license");
 
-        setStoreIdentity({
-          legalName: legal,
-          dbaName: dba,
-          address: extracted.address?.trim() || storeIdentity.address,
-          city: extracted.city?.trim() || storeIdentity.city,
-          state: extracted.state?.trim() || storeIdentity.state,
-          zip: extracted.zip?.trim() || storeIdentity.zip,
-          suggestedSlug:
-            extracted.suggestedSlug?.trim() || toSlug(dba || legal || "konnowac-coffee"),
-          sourceFileId: assetId,
-        });
-        setLicenseDetected(true);
+      const res = await fetch("/api/ocr", {
+        method: "POST",
+        body: formData,
+      });
+      const json = (await res.json()) as LicenseOcrApiResponse;
 
-        setLicenseFiles((prev) =>
-          prev.map((a) => (a.id === assetId ? { ...a, status: "ready" } : a))
-        );
-        setStatusBanner(`Business identity verified from "${file.name}".`);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Failed to parse license";
-        setLicenseFiles((prev) =>
-          prev.map((a) =>
-            a.id === assetId ? { ...a, status: "error", errorMessage: msg } : a
-          )
-        );
-        setStatusBanner(`License OCR alert: ${msg}`);
+      if (!res.ok || !json.data) {
+        throw new Error(json.error || "License OCR failed");
       }
+
+      const extracted = json.data;
+      const dba = extracted.dbaName?.trim() || storeIdentity.dbaName;
+      const legal = extracted.legalName?.trim() || storeIdentity.legalName;
+
+      setStoreIdentity({
+        legalName: legal,
+        dbaName: dba,
+        address: extracted.address?.trim() || storeIdentity.address,
+        city: extracted.city?.trim() || storeIdentity.city,
+        state: extracted.state?.trim() || storeIdentity.state,
+        zip: extracted.zip?.trim() || storeIdentity.zip,
+        suggestedSlug:
+          extracted.suggestedSlug?.trim() || toSlug(dba || legal || "konnowac-coffee"),
+        sourceFileId: assetId,
+      });
+      setLicenseDetected(true);
+
+      setLicenseFiles((prev) =>
+        prev.map((a) => (a.id === assetId ? { ...a, status: "ready" } : a))
+      );
+      setStatusBanner(`Business identity verified from "${file.name}".`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to parse license";
+      setLicenseFiles((prev) =>
+        prev.map((a) =>
+          a.id === assetId ? { ...a, status: "error", errorMessage: msg } : a
+        )
+      );
+      setStatusBanner(`License OCR alert: ${msg}`);
     }
   };
 
-  // Dropzone 2: Menu & Signage Upload Handler (Appends without overwriting)
-  const handleMenuUpload = async (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+  // Core processor for Dropzone 2: Menu & Signage (Multiple Files, Appends without overwriting)
+  const processMenuFiles = async (files: File[]) => {
     if (files.length === 0) return;
-    e.target.value = "";
 
-    for (const file of files) {
-      const assetId = `menu_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const previewUrl = await readFilePreview(file);
+    // Immediately create instant local object URLs so thumbnails & file counter update synchronously
+    const queuedAssets: Array<{ file: File; asset: UploadedAsset }> = files.map(
+      (file) => {
+        const assetId = `menu_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const previewUrl = URL.createObjectURL(file);
+        return {
+          file,
+          asset: {
+            id: assetId,
+            zone: "menu",
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type || "image/jpeg",
+            previewUrl,
+            status: "processing",
+          },
+        };
+      }
+    );
 
-      const newAsset: UploadedAsset = {
-        id: assetId,
-        zone: "menu",
-        fileName: file.name,
-        fileSize: file.size,
-        previewUrl,
-        status: "processing",
-      };
+    setMenuFiles((prev) => [...prev, ...queuedAssets.map((q) => q.asset)]);
 
-      setMenuFiles((prev) => [...prev, newAsset]);
+    for (const { file, asset } of queuedAssets) {
       setStatusBanner(`Parsing menu board "${file.name}" via Gemini Vision...`);
 
       try {
@@ -331,7 +355,6 @@ export default function MultiSourceIntakeStagingPage() {
             const key = normalizeKey(incoming.name);
             const match = map.get(key);
             if (match) {
-              // Merge variations if new sizes detected
               const mergedVars = [...match.variations];
               incoming.variations.forEach((incVar) => {
                 const existsIdx = mergedVars.findIndex(
@@ -349,7 +372,7 @@ export default function MultiSourceIntakeStagingPage() {
           return Array.from(map.values());
         });
 
-        // If the menu board also had explicit add-on modifiers, stage them too
+        // Stage explicit add-on modifiers if found on menu board
         if (boardModifiers.length > 0) {
           setStagedModifiers((prev) => {
             const modMap = new Map<string, StagedModifierOption>();
@@ -387,7 +410,7 @@ export default function MultiSourceIntakeStagingPage() {
         }
 
         setMenuFiles((prev) =>
-          prev.map((a) => (a.id === assetId ? { ...a, status: "ready" } : a))
+          prev.map((a) => (a.id === asset.id ? { ...a, status: "ready" } : a))
         );
         setStatusBanner(
           `Appended ${extractedDrinks.length} menu items from "${file.name}" into staging.`
@@ -396,7 +419,7 @@ export default function MultiSourceIntakeStagingPage() {
         const msg = err instanceof Error ? err.message : "Failed to parse menu board";
         setMenuFiles((prev) =>
           prev.map((a) =>
-            a.id === assetId ? { ...a, status: "error", errorMessage: msg } : a
+            a.id === asset.id ? { ...a, status: "error", errorMessage: msg } : a
           )
         );
         setStatusBanner(`Menu OCR alert: ${msg}`);
@@ -404,26 +427,33 @@ export default function MultiSourceIntakeStagingPage() {
     }
   };
 
-  // Dropzone 3: Vendor Invoice Upload Handler
-  const handleInvoiceUpload = async (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+  // Core processor for Dropzone 3: Vendor Invoices (Multiple Files)
+  const processInvoiceFiles = async (files: File[]) => {
     if (files.length === 0) return;
-    e.target.value = "";
 
-    for (const file of files) {
-      const assetId = `inv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const previewUrl = await readFilePreview(file);
+    // Immediately create instant local object URLs so thumbnails & file counter update synchronously
+    const queuedAssets: Array<{ file: File; asset: UploadedAsset }> = files.map(
+      (file) => {
+        const assetId = `inv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const previewUrl = URL.createObjectURL(file);
+        return {
+          file,
+          asset: {
+            id: assetId,
+            zone: "invoice",
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type || "image/jpeg",
+            previewUrl,
+            status: "processing",
+          },
+        };
+      }
+    );
 
-      const newAsset: UploadedAsset = {
-        id: assetId,
-        zone: "invoice",
-        fileName: file.name,
-        fileSize: file.size,
-        previewUrl,
-        status: "processing",
-      };
+    setInvoiceFiles((prev) => [...prev, ...queuedAssets.map((q) => q.asset)]);
 
-      setInvoiceFiles((prev) => [...prev, newAsset]);
+    for (const { file, asset } of queuedAssets) {
       setStatusBanner(`Classifying vendor invoice "${file.name}" via /api/ocr/invoice...`);
 
       try {
@@ -505,7 +535,7 @@ export default function MultiSourceIntakeStagingPage() {
                   name: sup.name,
                   packSize: sup.packSize,
                   vendorName,
-                  included: false, // Flagged as non-menu / excluded from POS screen by default
+                  included: false,
                   classification: "operational_supply",
                   sourceFileName: file.name,
                 });
@@ -516,7 +546,7 @@ export default function MultiSourceIntakeStagingPage() {
         }
 
         setInvoiceFiles((prev) =>
-          prev.map((a) => (a.id === assetId ? { ...a, status: "ready" } : a))
+          prev.map((a) => (a.id === asset.id ? { ...a, status: "ready" } : a))
         );
         setStatusBanner(
           `Ingested ${vendorName} invoice: ${data.retailItems?.length || 0} retail SKUs, ${
@@ -527,7 +557,7 @@ export default function MultiSourceIntakeStagingPage() {
         const msg = err instanceof Error ? err.message : "Failed to parse invoice";
         setInvoiceFiles((prev) =>
           prev.map((a) =>
-            a.id === assetId ? { ...a, status: "error", errorMessage: msg } : a
+            a.id === asset.id ? { ...a, status: "error", errorMessage: msg } : a
           )
         );
         setStatusBanner(`Invoice OCR alert: ${msg}`);
@@ -535,15 +565,97 @@ export default function MultiSourceIntakeStagingPage() {
     }
   };
 
-  // Remove uploaded file card from a dropzone
+  // Native input onChange handlers
+  const handleLicenseUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length > 0) {
+      void processLicenseFiles(files);
+    }
+  };
+
+  const handleMenuUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length > 0) {
+      void processMenuFiles(files);
+    }
+  };
+
+  const handleInvoiceUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length > 0) {
+      void processInvoiceFiles(files);
+    }
+  };
+
+  // Drag-and-drop handlers for each dropzone card
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDropZone = (zone: DropzoneKey, e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length === 0) return;
+
+    if (zone === "license") {
+      void processLicenseFiles(files);
+    } else if (zone === "menu") {
+      void processMenuFiles(files);
+    } else if (zone === "invoice") {
+      void processInvoiceFiles(files);
+    }
+  };
+
+  // Card click trigger (opens file picker when clicking anywhere on the card outside interactive children)
+  const handleCardClick = (zone: DropzoneKey, e: MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("button, label, a, input, select")) {
+      return;
+    }
+    if (zone === "license") {
+      licenseInputRef.current?.click();
+    } else if (zone === "menu") {
+      menuInputRef.current?.click();
+    } else if (zone === "invoice") {
+      invoiceInputRef.current?.click();
+    }
+  };
+
+  // Remove uploaded file card from a dropzone & revoke blob URL
   const handleRemoveAsset = (zone: DropzoneKey, assetId: string, fileName: string) => {
     if (zone === "license") {
-      setLicenseFiles((prev) => prev.filter((f) => f.id !== assetId));
+      setLicenseFiles((prev) => {
+        prev
+          .filter((f) => f.id === assetId)
+          .forEach((f) => {
+            if (f.previewUrl.startsWith("blob:")) URL.revokeObjectURL(f.previewUrl);
+          });
+        return prev.filter((f) => f.id !== assetId);
+      });
     } else if (zone === "menu") {
-      setMenuFiles((prev) => prev.filter((f) => f.id !== assetId));
+      setMenuFiles((prev) => {
+        prev
+          .filter((f) => f.id === assetId)
+          .forEach((f) => {
+            if (f.previewUrl.startsWith("blob:")) URL.revokeObjectURL(f.previewUrl);
+          });
+        return prev.filter((f) => f.id !== assetId);
+      });
       setStagedMenuItems((prev) => prev.filter((i) => i.sourceFileName !== fileName));
     } else if (zone === "invoice") {
-      setInvoiceFiles((prev) => prev.filter((f) => f.id !== assetId));
+      setInvoiceFiles((prev) => {
+        prev
+          .filter((f) => f.id === assetId)
+          .forEach((f) => {
+            if (f.previewUrl.startsWith("blob:")) URL.revokeObjectURL(f.previewUrl);
+          });
+        return prev.filter((f) => f.id !== assetId);
+      });
       setStagedRetailItems((prev) => prev.filter((i) => i.sourceFileName !== fileName));
       setStagedModifiers((prev) => prev.filter((i) => i.sourceFileName !== fileName));
       setStagedSupplies((prev) => prev.filter((i) => i.sourceFileName !== fileName));
@@ -811,6 +923,28 @@ export default function MultiSourceIntakeStagingPage() {
     );
   };
 
+  const renderAssetThumbnail = (asset: UploadedAsset) => {
+    const isPdf =
+      asset.mimeType === "application/pdf" ||
+      asset.fileName.toLowerCase().endsWith(".pdf");
+
+    if (isPdf) {
+      return (
+        <div className="h-11 w-11 rounded-lg border border-slate-700 shrink-0 bg-slate-900 flex items-center justify-center text-[10px] font-mono font-bold text-amber-400">
+          PDF
+        </div>
+      );
+    }
+
+    return (
+      <img
+        src={asset.previewUrl}
+        alt={asset.fileName}
+        className="h-11 w-11 rounded-lg object-cover border border-slate-700 shrink-0 bg-slate-900"
+      />
+    );
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Onboarding Wizard Top Header */}
@@ -904,7 +1038,7 @@ export default function MultiSourceIntakeStagingPage() {
           <button
             type="button"
             onClick={handleLoadDemoFixtures}
-            className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-amber-400 text-xs font-semibold transition flex items-center space-x-2"
+            className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-amber-400 text-xs font-semibold transition flex items-center space-x-2 cursor-pointer"
           >
             <span>⚡</span>
             <span>Load Sample Konnowac Intake Data</span>
@@ -921,23 +1055,27 @@ export default function MultiSourceIntakeStagingPage() {
             <button
               type="button"
               onClick={() => setStatusBanner(null)}
-              className="text-xs text-slate-400 hover:text-white font-mono"
+              className="text-xs text-slate-400 hover:text-white font-mono cursor-pointer"
             >
               [Dismiss]
             </button>
           </div>
         )}
 
-        {/* Hidden Multi-File Inputs */}
+        {/* Hidden Native File Inputs */}
+        {/* Dropzone 1 (License): accept="image/*,application/pdf", capture="environment", single file */}
         <input
+          id="license-upload-input"
           ref={licenseInputRef}
           type="file"
-          accept="image/*"
-          multiple
+          accept="image/*,application/pdf"
+          capture="environment"
           onChange={handleLicenseUpload}
           className="hidden"
         />
+        {/* Dropzone 2 (Menus): accept="image/*", multiple file selection */}
         <input
+          id="menu-upload-input"
           ref={menuInputRef}
           type="file"
           accept="image/*"
@@ -945,10 +1083,12 @@ export default function MultiSourceIntakeStagingPage() {
           onChange={handleMenuUpload}
           className="hidden"
         />
+        {/* Dropzone 3 (Invoices): accept="image/*,application/pdf", multiple file selection */}
         <input
+          id="invoice-upload-input"
           ref={invoiceInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,application/pdf"
           multiple
           onChange={handleInvoiceUpload}
           className="hidden"
@@ -960,23 +1100,36 @@ export default function MultiSourceIntakeStagingPage() {
           className="grid grid-cols-1 lg:grid-cols-3 gap-6"
         >
           {/* Dropzone 1: Business Identity */}
-          <div className="bg-slate-900 border border-slate-800 hover:border-amber-500/50 rounded-2xl p-6 flex flex-col justify-between space-y-5 transition shadow-lg">
+          <div
+            onClick={(e) => handleCardClick("license", e)}
+            onDragOver={handleDragOver}
+            onDrop={(e) => handleDropZone("license", e)}
+            className="bg-slate-900 border border-slate-800 hover:border-amber-500/50 rounded-2xl p-6 flex flex-col justify-between space-y-5 transition shadow-lg cursor-pointer"
+          >
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-mono uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30">
                   Dropzone 1 &middot; Identity
                 </span>
-                <span className="text-xs font-mono text-slate-400">
-                  {licenseFiles.length} file{licenseFiles.length === 1 ? "" : "s"}
+                <span className="text-xs font-mono text-amber-300 bg-slate-950 border border-slate-800 px-2.5 py-0.5 rounded-full">
+                  {formatFileCountBadge(licenseFiles.length)}
                 </span>
               </div>
               <h2 className="text-base font-bold text-white">
                 Business Identity &amp; Permit
               </h2>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Upload state business license or health permit image. Automatically extracts Legal Name, DBA/Trade Name, Address, City, State, Zip, and Suggested Slug.
+                Upload state business license or health permit (Image or PDF). Automatically extracts Legal Name, DBA/Trade Name, Address, City, State, Zip, and Suggested Slug.
               </p>
             </div>
+
+            {/* Analyzing Spinner Banner */}
+            {isLicenseAnalyzing && (
+              <div className="flex items-center space-x-2.5 px-3 py-2 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-300">
+                <span className="h-3.5 w-3.5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0"></span>
+                <span>Analyzing business license via Gemini Vision...</span>
+              </div>
+            )}
 
             {/* Multi-file Preview Cards */}
             {licenseFiles.length > 0 ? (
@@ -987,31 +1140,33 @@ export default function MultiSourceIntakeStagingPage() {
                     className="flex items-center justify-between bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 gap-3"
                   >
                     <div className="flex items-center space-x-3 min-w-0">
-                      <img
-                        src={asset.previewUrl}
-                        alt={asset.fileName}
-                        className="h-11 w-11 rounded-lg object-cover border border-slate-700 shrink-0 bg-slate-900"
-                      />
+                      {renderAssetThumbnail(asset)}
                       <div className="min-w-0">
                         <p className="text-xs font-semibold text-slate-200 truncate">
                           {asset.fileName}
                         </p>
-                        <p className="text-[11px] font-mono text-slate-400">
-                          {asset.status === "processing"
-                            ? "Extracting identity..."
-                            : asset.status === "error"
-                            ? asset.errorMessage || "Error"
-                            : "Identity Parsed"}
-                        </p>
+                        <div className="flex items-center space-x-1.5 text-[11px] font-mono text-slate-400">
+                          {asset.status === "processing" && (
+                            <span className="h-2.5 w-2.5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0"></span>
+                          )}
+                          <span>
+                            {asset.status === "processing"
+                              ? "Extracting identity..."
+                              : asset.status === "error"
+                              ? asset.errorMessage || "Error"
+                              : "Identity Parsed"}
+                          </span>
+                        </div>
                       </div>
                     </div>
                     <button
                       type="button"
-                      onClick={() =>
-                        handleRemoveAsset("license", asset.id, asset.fileName)
-                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemoveAsset("license", asset.id, asset.fileName);
+                      }}
                       aria-label={`Remove ${asset.fileName}`}
-                      className="px-2 py-1 text-xs font-mono text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition shrink-0"
+                      className="px-2 py-1 text-xs font-mono text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition shrink-0 cursor-pointer"
                     >
                       Remove
                     </button>
@@ -1019,30 +1174,45 @@ export default function MultiSourceIntakeStagingPage() {
                 ))}
               </div>
             ) : (
-              <div className="border border-dashed border-slate-800 rounded-xl p-5 text-center text-xs text-slate-500">
-                No license image uploaded yet. Defaulting to tenant{" "}
+              <label
+                htmlFor="license-upload-input"
+                className="block border border-dashed border-slate-800 hover:border-amber-500/40 rounded-xl p-5 text-center text-xs text-slate-500 cursor-pointer transition"
+              >
+                Click or tap to snap a photo or select a license file. Defaulting to tenant{" "}
                 <span className="text-amber-400 font-mono">konnowac-coffee</span>.
-              </div>
+              </label>
             )}
 
-            <button
-              type="button"
-              onClick={() => licenseInputRef.current?.click()}
-              className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2"
+            <label
+              htmlFor="license-upload-input"
+              onClick={(e) => e.stopPropagation()}
+              className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2 cursor-pointer select-none"
             >
-              <span>+ Upload Business License / Permit</span>
-            </button>
+              {isLicenseAnalyzing ? (
+                <>
+                  <span className="h-3.5 w-3.5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin"></span>
+                  <span>Analyzing Permit...</span>
+                </>
+              ) : (
+                <span>+ Upload Business License / Permit</span>
+              )}
+            </label>
           </div>
 
           {/* Dropzone 2: Menu & Signage */}
-          <div className="bg-slate-900 border border-slate-800 hover:border-cyan-500/50 rounded-2xl p-6 flex flex-col justify-between space-y-5 transition shadow-lg">
+          <div
+            onClick={(e) => handleCardClick("menu", e)}
+            onDragOver={handleDragOver}
+            onDrop={(e) => handleDropZone("menu", e)}
+            className="bg-slate-900 border border-slate-800 hover:border-cyan-500/50 rounded-2xl p-6 flex flex-col justify-between space-y-5 transition shadow-lg cursor-pointer"
+          >
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-mono uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
                   Dropzone 2 &middot; Menu &amp; Signage
                 </span>
-                <span className="text-xs font-mono text-slate-400">
-                  {menuFiles.length} file{menuFiles.length === 1 ? "" : "s"}
+                <span className="text-xs font-mono text-cyan-300 bg-slate-950 border border-slate-800 px-2.5 py-0.5 rounded-full">
+                  {formatFileCountBadge(menuFiles.length)}
                 </span>
               </div>
               <h2 className="text-base font-bold text-white">
@@ -1053,6 +1223,14 @@ export default function MultiSourceIntakeStagingPage() {
               </p>
             </div>
 
+            {/* Analyzing Spinner Banner */}
+            {isMenuAnalyzing && (
+              <div className="flex items-center space-x-2.5 px-3 py-2 rounded-xl bg-cyan-950/40 border border-cyan-500/40 text-xs text-cyan-300">
+                <span className="h-3.5 w-3.5 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin shrink-0"></span>
+                <span>Analyzing menu board signage via Gemini Vision...</span>
+              </div>
+            )}
+
             {/* Multi-file Preview Cards */}
             {menuFiles.length > 0 ? (
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
@@ -1062,31 +1240,33 @@ export default function MultiSourceIntakeStagingPage() {
                     className="flex items-center justify-between bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 gap-3"
                   >
                     <div className="flex items-center space-x-3 min-w-0">
-                      <img
-                        src={asset.previewUrl}
-                        alt={asset.fileName}
-                        className="h-11 w-11 rounded-lg object-cover border border-slate-700 shrink-0 bg-slate-900"
-                      />
+                      {renderAssetThumbnail(asset)}
                       <div className="min-w-0">
                         <p className="text-xs font-semibold text-slate-200 truncate">
                           {asset.fileName}
                         </p>
-                        <p className="text-[11px] font-mono text-cyan-400">
-                          {asset.status === "processing"
-                            ? "Scanning board..."
-                            : asset.status === "error"
-                            ? asset.errorMessage || "Error"
-                            : "Appended to Menu"}
-                        </p>
+                        <div className="flex items-center space-x-1.5 text-[11px] font-mono text-cyan-400">
+                          {asset.status === "processing" && (
+                            <span className="h-2.5 w-2.5 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin shrink-0"></span>
+                          )}
+                          <span>
+                            {asset.status === "processing"
+                              ? "Scanning board..."
+                              : asset.status === "error"
+                              ? asset.errorMessage || "Error"
+                              : "Appended to Menu"}
+                          </span>
+                        </div>
                       </div>
                     </div>
                     <button
                       type="button"
-                      onClick={() =>
-                        handleRemoveAsset("menu", asset.id, asset.fileName)
-                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemoveAsset("menu", asset.id, asset.fileName);
+                      }}
                       aria-label={`Remove ${asset.fileName}`}
-                      className="px-2 py-1 text-xs font-mono text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition shrink-0"
+                      className="px-2 py-1 text-xs font-mono text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition shrink-0 cursor-pointer"
                     >
                       Remove
                     </button>
@@ -1094,29 +1274,44 @@ export default function MultiSourceIntakeStagingPage() {
                 ))}
               </div>
             ) : (
-              <div className="border border-dashed border-slate-800 rounded-xl p-5 text-center text-xs text-slate-500">
-                Drop multiple menu board photos to accumulate categories, base sizes, and prices.
-              </div>
+              <label
+                htmlFor="menu-upload-input"
+                className="block border border-dashed border-slate-800 hover:border-cyan-500/40 rounded-xl p-5 text-center text-xs text-slate-500 cursor-pointer transition"
+              >
+                Click or drop multiple menu board photos to accumulate categories, base sizes, and prices.
+              </label>
             )}
 
-            <button
-              type="button"
-              onClick={() => menuInputRef.current?.click()}
-              className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2"
+            <label
+              htmlFor="menu-upload-input"
+              onClick={(e) => e.stopPropagation()}
+              className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2 cursor-pointer select-none"
             >
-              <span>+ Upload Menu Board / Flyer Image(s)</span>
-            </button>
+              {isMenuAnalyzing ? (
+                <>
+                  <span className="h-3.5 w-3.5 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin"></span>
+                  <span>Analyzing Menu Board(s)...</span>
+                </>
+              ) : (
+                <span>+ Upload Menu Board / Flyer Image(s)</span>
+              )}
+            </label>
           </div>
 
           {/* Dropzone 3: Vendor Invoices */}
-          <div className="bg-slate-900 border border-slate-800 hover:border-emerald-500/50 rounded-2xl p-6 flex flex-col justify-between space-y-5 transition shadow-lg">
+          <div
+            onClick={(e) => handleCardClick("invoice", e)}
+            onDragOver={handleDragOver}
+            onDrop={(e) => handleDropZone("invoice", e)}
+            className="bg-slate-900 border border-slate-800 hover:border-emerald-500/50 rounded-2xl p-6 flex flex-col justify-between space-y-5 transition shadow-lg cursor-pointer"
+          >
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-mono uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
                   Dropzone 3 &middot; Vendor Invoices
                 </span>
-                <span className="text-xs font-mono text-slate-400">
-                  {invoiceFiles.length} file{invoiceFiles.length === 1 ? "" : "s"}
+                <span className="text-xs font-mono text-emerald-300 bg-slate-950 border border-slate-800 px-2.5 py-0.5 rounded-full">
+                  {formatFileCountBadge(invoiceFiles.length)}
                 </span>
               </div>
               <h2 className="text-base font-bold text-white">
@@ -1127,6 +1322,14 @@ export default function MultiSourceIntakeStagingPage() {
               </p>
             </div>
 
+            {/* Analyzing Spinner Banner */}
+            {isInvoiceAnalyzing && (
+              <div className="flex items-center space-x-2.5 px-3 py-2 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-xs text-emerald-300">
+                <span className="h-3.5 w-3.5 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin shrink-0"></span>
+                <span>Classifying invoice SKUs via Gemini Vision...</span>
+              </div>
+            )}
+
             {/* Multi-file Preview Cards */}
             {invoiceFiles.length > 0 ? (
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
@@ -1136,31 +1339,33 @@ export default function MultiSourceIntakeStagingPage() {
                     className="flex items-center justify-between bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 gap-3"
                   >
                     <div className="flex items-center space-x-3 min-w-0">
-                      <img
-                        src={asset.previewUrl}
-                        alt={asset.fileName}
-                        className="h-11 w-11 rounded-lg object-cover border border-slate-700 shrink-0 bg-slate-900"
-                      />
+                      {renderAssetThumbnail(asset)}
                       <div className="min-w-0">
                         <p className="text-xs font-semibold text-slate-200 truncate">
                           {asset.fileName}
                         </p>
-                        <p className="text-[11px] font-mono text-emerald-400">
-                          {asset.status === "processing"
-                            ? "Classifying SKUs..."
-                            : asset.status === "error"
-                            ? asset.errorMessage || "Error"
-                            : "Classified & Staged"}
-                        </p>
+                        <div className="flex items-center space-x-1.5 text-[11px] font-mono text-emerald-400">
+                          {asset.status === "processing" && (
+                            <span className="h-2.5 w-2.5 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin shrink-0"></span>
+                          )}
+                          <span>
+                            {asset.status === "processing"
+                              ? "Classifying SKUs..."
+                              : asset.status === "error"
+                              ? asset.errorMessage || "Error"
+                              : "Classified & Staged"}
+                          </span>
+                        </div>
                       </div>
                     </div>
                     <button
                       type="button"
-                      onClick={() =>
-                        handleRemoveAsset("invoice", asset.id, asset.fileName)
-                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemoveAsset("invoice", asset.id, asset.fileName);
+                      }}
                       aria-label={`Remove ${asset.fileName}`}
-                      className="px-2 py-1 text-xs font-mono text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition shrink-0"
+                      className="px-2 py-1 text-xs font-mono text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition shrink-0 cursor-pointer"
                     >
                       Remove
                     </button>
@@ -1168,18 +1373,28 @@ export default function MultiSourceIntakeStagingPage() {
                 ))}
               </div>
             ) : (
-              <div className="border border-dashed border-slate-800 rounded-xl p-5 text-center text-xs text-slate-500">
-                Upload Dillanos, Torani, or Big Train invoices to auto-populate modifiers &amp; retail items.
-              </div>
+              <label
+                htmlFor="invoice-upload-input"
+                className="block border border-dashed border-slate-800 hover:border-emerald-500/40 rounded-xl p-5 text-center text-xs text-slate-500 cursor-pointer transition"
+              >
+                Click or drop Dillanos, Torani, or Big Train invoices to auto-populate modifiers &amp; retail items.
+              </label>
             )}
 
-            <button
-              type="button"
-              onClick={() => invoiceInputRef.current?.click()}
-              className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2"
+            <label
+              htmlFor="invoice-upload-input"
+              onClick={(e) => e.stopPropagation()}
+              className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2 cursor-pointer select-none"
             >
-              <span>+ Upload Vendor Invoice / Packing Slip(s)</span>
-            </button>
+              {isInvoiceAnalyzing ? (
+                <>
+                  <span className="h-3.5 w-3.5 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin"></span>
+                  <span>Analyzing Invoice(s)...</span>
+                </>
+              ) : (
+                <span>+ Upload Vendor Invoice / Packing Slip(s)</span>
+              )}
+            </label>
           </div>
         </section>
 
@@ -1368,7 +1583,7 @@ export default function MultiSourceIntakeStagingPage() {
                   key={tab.id}
                   type="button"
                   onClick={() => setActiveReviewTab(tab.id)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
                     activeReviewTab === tab.id
                       ? "bg-amber-500 text-slate-950 font-bold"
                       : "text-slate-400 hover:text-white"
@@ -1774,4 +1989,3 @@ export default function MultiSourceIntakeStagingPage() {
     </div>
   );
 }
-
