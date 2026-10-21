@@ -1,6 +1,20 @@
 "use client";
 
-import { useEffect, useState, useRef, ChangeEvent } from "react";
+import { useEffect, useState, useRef, useCallback, ChangeEvent } from "react";
+import Link from "next/link";
+import {
+  INTAKE_STAGE_STORAGE_KEY,
+  toSlug,
+  type IntakeStageData,
+} from "@/app/onboard/intake/page";
+import {
+  RULES_CONFIG_STORAGE_KEY,
+  type BusinessRulesConfig,
+} from "@/app/onboard/rules/page";
+import {
+  getPosAuthStorageKey,
+  type PosAuthRecord,
+} from "@/app/onboard/connect/page";
 
 type Variation = {
   size: string;
@@ -75,6 +89,98 @@ const createEmptyPage = (pageIndex: number): GridTile[] => {
     price: "",
     color: "blank",
   }));
+};
+
+const getItemColor = (name: string, categoryName?: string): TileColor => {
+  const combined = `${name} ${categoryName || ""}`;
+  if (/retail|bean|merch|bagged/i.test(combined)) {
+    return "slate";
+  }
+  if (
+    /muffin|scone|cookie|burrito|bagel|pastry|food|sandwich|croissant|snack|treat|bakery|pretzel|biscotti|cake/i.test(
+      combined
+    )
+  ) {
+    return "emerald";
+  }
+  if (
+    /cold|iced|lotus|energy|redbull|rebel|tea|smoothie|soda|lemonade|boba|frappe|blended/i.test(
+      combined
+    )
+  ) {
+    return "cyan";
+  }
+  return "amber";
+};
+
+const buildPagesFromCatalog = (
+  items: StagedItem[],
+  modifiers: StagedModifier[]
+): GridTile[][] => {
+  if (items.length === 0 && modifiers.length === 0) {
+    return [FAST_CASH_PRESET];
+  }
+
+  const sorted = [...items].sort((a, b) => {
+    const aType = getItemColor(a.name, a.categoryName);
+    const bType = getItemColor(b.name, b.categoryName);
+    const score = (t: TileColor) =>
+      t === "amber" ? 1 : t === "cyan" ? 2 : t === "emerald" ? 3 : 4;
+    return score(aType) - score(bType);
+  });
+
+  const combinedTilesData: Array<{
+    label: string;
+    price: string;
+    color: TileColor;
+  }> = sorted.map((item) => {
+    const primaryVar = item.variations[0];
+    return {
+      label: `${primaryVar?.size ? primaryVar.size + " " : ""}${item.name}`,
+      price: primaryVar ? `$${primaryVar.price.toFixed(2)}` : "$4.50",
+      color: getItemColor(item.name, item.categoryName),
+    };
+  });
+
+  // Append top modifiers into remaining slots or subsequent pages so both drinks and modifiers are represented in the matrix
+  modifiers.slice(0, 12).forEach((mod) => {
+    combinedTilesData.push({
+      label: `+ ${mod.name}`,
+      price: `+$${mod.price.toFixed(2)}`,
+      color: "slate",
+    });
+  });
+
+  const totalPagesNeeded = Math.max(1, Math.ceil(combinedTilesData.length / 20));
+  const generatedPages: GridTile[][] = [];
+
+  for (let p = 0; p < totalPagesNeeded; p++) {
+    const startItemIdx = p * 20;
+    const chunk = combinedTilesData.slice(startItemIdx, startItemIdx + 20);
+    const startSlotId = p * 20 + 1;
+
+    const pageTiles: GridTile[] = Array.from({ length: 20 }, (_, i) => {
+      const entry = chunk[i];
+      if (!entry) {
+        return {
+          id: startSlotId + i,
+          label: "[ Empty Slot ]",
+          price: "",
+          color: "blank" as TileColor,
+        };
+      }
+      return {
+        id: startSlotId + i,
+        label: entry.label,
+        price: entry.price,
+        color: entry.color,
+      };
+    });
+
+    generatedPages.push(pageTiles);
+  }
+
+  return generatedPages;
 };
 
 const FAST_CASH_PRESET: GridTile[] = [
@@ -156,15 +262,28 @@ const COLOR_CODED_PRESET: GridTile[] = [
 ];
 
 export default function BarMaidDashboard() {
-  const [activeTab, setActiveTab] = useState<"intake" | "audit" | "studio" | "deploy">("intake");
-  const [selectedArchetype, setSelectedArchetype] = useState<ArchetypeId>("fast-cash");
+  const [activeTab, setActiveTab] = useState<
+    "intake" | "audit" | "studio" | "deploy"
+  >("studio");
+  const [selectedArchetype, setSelectedArchetype] =
+    useState<ArchetypeId>("fast-cash");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Active Tenant Scope hydrated from 'barmaid_intake_stage'
+  const [merchantSlug, setMerchantSlug] = useState<string>("highway-espresso");
+  const [merchantDisplayName, setMerchantDisplayName] =
+    useState<string>("Highway Espresso");
+  const [posAuth, setPosAuth] = useState<PosAuthRecord | null>(null);
+
   // Live Square Raw Data Store
   const [squareItems, setSquareItems] = useState<SquareRawItem[]>([]);
-  const [squareCategories, setSquareCategories] = useState<SquareRawCategory[]>([]);
-  const [squareModifierLists, setSquareModifierLists] = useState<SquareRawModifierList[]>([]);
+  const [squareCategories, setSquareCategories] = useState<SquareRawCategory[]>(
+    []
+  );
+  const [squareModifierLists, setSquareModifierLists] = useState<
+    SquareRawModifierList[]
+  >([]);
   const [squareTotalObjects, setSquareTotalObjects] = useState<number>(0);
 
   // Multi-Board Intake State
@@ -187,14 +306,16 @@ export default function BarMaidDashboard() {
   const [selectedTileId, setSelectedTileId] = useState<number>(1);
 
   // Deployment States
-  const [deployState, setDeployState] = useState<"idle" | "deploying" | "success">("idle");
+  const [deployState, setDeployState] = useState<
+    "idle" | "deploying" | "success"
+  >("idle");
   const [deployMessage, setDeployMessage] = useState<string>("");
 
   const boardInputRef = useRef<HTMLInputElement>(null);
   const posInputRef = useRef<HTMLInputElement>(null);
 
   // Preset swap
-  const applyPreset = (arch: ArchetypeId) => {
+  const applyPreset = useCallback((arch: ArchetypeId) => {
     let preset = FAST_CASH_PRESET;
     if (arch === "specialty") preset = SPECIALTY_PRESET;
     if (arch === "color-coded") preset = COLOR_CODED_PRESET;
@@ -202,18 +323,155 @@ export default function BarMaidDashboard() {
     setPages([preset]);
     setActivePageIndex(0);
     setSelectedTileId(1);
-  };
+  }, []);
 
+  // Hydrate active tenant and staged drink/modifier catalog from 'barmaid_intake_stage'
   useEffect(() => {
-    applyPreset(selectedArchetype);
-  }, [selectedArchetype]);
+    let resolvedSlug = "highway-espresso";
+    let resolvedDisplayName = "Highway Espresso";
+    let customAccessToken = "";
 
-  // Fetch full live catalog from Square
-  useEffect(() => {
+    try {
+      const searchParams =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : null;
+      const queryMerchant = searchParams?.get("merchant")?.trim();
+      const queryTab = searchParams?.get("tab")?.trim();
+
+      if (
+        queryTab === "intake" ||
+        queryTab === "audit" ||
+        queryTab === "studio" ||
+        queryTab === "deploy"
+      ) {
+        setActiveTab(queryTab);
+      }
+
+      const rawStage =
+        localStorage.getItem(INTAKE_STAGE_STORAGE_KEY) ||
+        sessionStorage.getItem(INTAKE_STAGE_STORAGE_KEY);
+      const rawRules =
+        localStorage.getItem(RULES_CONFIG_STORAGE_KEY) ||
+        sessionStorage.getItem(RULES_CONFIG_STORAGE_KEY);
+
+      const parsedStage = rawStage
+        ? (JSON.parse(rawStage) as IntakeStageData)
+        : null;
+      const parsedRules = rawRules
+        ? (JSON.parse(rawRules) as BusinessRulesConfig)
+        : null;
+
+      resolvedSlug =
+        queryMerchant ||
+        parsedRules?.merchant_slug ||
+        parsedStage?.storeProfile?.merchantSlug ||
+        toSlug(
+          parsedStage?.storeProfile?.dbaName ||
+            parsedStage?.storeProfile?.legalName ||
+            ""
+        ) ||
+        "highway-espresso";
+
+      resolvedDisplayName =
+        parsedStage?.storeProfile?.dbaName ||
+        parsedStage?.storeProfile?.legalName ||
+        resolvedSlug;
+
+      setMerchantSlug(resolvedSlug);
+      setMerchantDisplayName(resolvedDisplayName);
+
+      // Check saved POS auth token for this merchant_slug
+      const authKey = getPosAuthStorageKey(resolvedSlug);
+      const rawAuth =
+        localStorage.getItem(authKey) || sessionStorage.getItem(authKey);
+      if (rawAuth) {
+        const parsedAuth = JSON.parse(rawAuth) as PosAuthRecord;
+        setPosAuth(parsedAuth);
+        customAccessToken = parsedAuth.accessToken;
+      }
+
+      // Hydrate staged catalog items and modifiers into Studio Matrix
+      if (parsedStage) {
+        const hydratedDrinksAndFood: StagedItem[] = (
+          parsedStage.stagedItems || []
+        )
+          .filter((item) => item.included !== false)
+          .map((item) => ({
+            name: item.name,
+            categoryName:
+              item.classification === "food"
+                ? "Food & Pastries"
+                : item.categoryName || "Espresso Bar",
+            variations:
+              item.variations && item.variations.length > 0
+                ? item.variations
+                : [{ size: "16oz", price: 4.75 }],
+            source: "upload" as const,
+          }));
+
+        const hydratedRetail: StagedItem[] = (parsedStage.retailItems || [])
+          .filter((item) => item.included !== false)
+          .map((item) => ({
+            name: item.name,
+            categoryName: "Retail Packaged",
+            variations: [
+              {
+                size: item.sku || "Unit",
+                price:
+                  item.suggestedPriceCents && item.suggestedPriceCents > 0
+                    ? item.suggestedPriceCents / 100
+                    : 14.0,
+              },
+            ],
+            source: "upload" as const,
+          }));
+
+        const defaultModPrice =
+          parsedRules?.modifierPricing?.syrupSauceAddOnDollars ?? 0.75;
+
+        const hydratedModifiers: StagedModifier[] = (
+          parsedStage.modifiers || []
+        )
+          .filter((mod) => mod.included !== false)
+          .map((mod) => ({
+            name: mod.name,
+            price: defaultModPrice,
+          }));
+
+        const combinedStagedItems = [
+          ...hydratedDrinksAndFood,
+          ...hydratedRetail,
+        ];
+
+        if (combinedStagedItems.length > 0 || hydratedModifiers.length > 0) {
+          setStagedItems(combinedStagedItems);
+          setStagedModifiers(hydratedModifiers);
+          const hydratedPages = buildPagesFromCatalog(
+            combinedStagedItems,
+            hydratedModifiers
+          );
+          setPages(hydratedPages);
+          setActivePageIndex(0);
+          setSelectedTileId(1);
+        }
+      }
+    } catch {
+      // Ignore storage parse errors
+    }
+
+    // Fetch live catalog from Square scoped to merchantSlug
     async function fetchCatalog() {
       try {
         setLoading(true);
-        const res = await fetch("/api/catalog");
+        const headers: Record<string, string> = {};
+        if (customAccessToken) {
+          headers["x-square-access-token"] = customAccessToken;
+        }
+        const res = await fetch(
+          `/api/catalog?merchant_slug=${encodeURIComponent(resolvedSlug)}`,
+          { headers }
+        );
         const data = await res.json();
         if (data.success) {
           setSquareItems(data.items || []);
@@ -282,6 +540,14 @@ export default function BarMaidDashboard() {
     applyPreset(selectedArchetype);
   };
 
+  // Populate from staged catalog
+  const handleLoadStagedIntoMatrix = () => {
+    const generated = buildPagesFromCatalog(stagedItems, stagedModifiers);
+    setPages(generated);
+    setActivePageIndex(0);
+    setSelectedTileId(1);
+  };
+
   // Add another blank page
   const handleAddPage = () => {
     setPages((prev) => {
@@ -293,13 +559,18 @@ export default function BarMaidDashboard() {
   };
 
   // OCR Processing Handler
-  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>, type: "board" | "pos") => {
+  const handleFileUpload = async (
+    e: ChangeEvent<HTMLInputElement>,
+    type: "board" | "pos"
+  ) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     try {
       setIsProcessingOcr(true);
-      setOcrStatusText(`Analyzing ${type === "board" ? "Menu Board" : "POS Screen"}...`);
+      setOcrStatusText(
+        `Analyzing ${type === "board" ? "Menu Board" : "POS Screen"}...`
+      );
 
       const reader = new FileReader();
       reader.onload = (uploadEvent) => {
@@ -328,11 +599,15 @@ export default function BarMaidDashboard() {
 
         const newItems: StagedItem[] = [];
         incomingCategories.forEach(
-          (cat: { categoryName: string; items: { name: string; variations?: Variation[] }[] }) => {
+          (cat: {
+            categoryName: string;
+            items: { name: string; variations?: Variation[] }[];
+          }) => {
             (cat.items || []).forEach((item) => {
-              const isColdOrEnergy = /iced|cold|lotus|energy|redbull|rebel|smoothie|tea/i.test(
-                item.name
-              );
+              const isColdOrEnergy =
+                /iced|cold|lotus|energy|redbull|rebel|smoothie|tea/i.test(
+                  item.name
+                );
               const defaultVariations: Variation[] = isColdOrEnergy
                 ? [
                     { size: "16oz", price: 4.75 },
@@ -346,7 +621,9 @@ export default function BarMaidDashboard() {
                   ];
 
               const resolvedVariations =
-                item.variations && item.variations.length > 0 && item.variations[0].price > 0
+                item.variations &&
+                item.variations.length > 0 &&
+                item.variations[0].price > 0
                   ? item.variations
                   : defaultVariations;
 
@@ -404,15 +681,20 @@ export default function BarMaidDashboard() {
         ? catMap.get(sqItem.item_data.category_id) || "Espresso Bar"
         : "Espresso Bar";
 
-      const variations: Variation[] = (sqItem.item_data?.variations || []).map((v) => ({
-        size: v.item_variation_data?.name || "Regular",
-        price: (v.item_variation_data?.price_money?.amount || 0) / 100,
-      }));
+      const variations: Variation[] = (sqItem.item_data?.variations || []).map(
+        (v) => ({
+          size: v.item_variation_data?.name || "Regular",
+          price: (v.item_variation_data?.price_money?.amount || 0) / 100,
+        })
+      );
 
       reconciledMap.set(key, {
         name: rawName,
         categoryName,
-        variations: variations.length > 0 ? variations : [{ size: "Regular", price: 4.5 }],
+        variations:
+          variations.length > 0
+            ? variations
+            : [{ size: "Regular", price: 4.5 }],
         squareId: sqItem.id,
         source: "square",
       });
@@ -442,7 +724,9 @@ export default function BarMaidDashboard() {
       } else {
         reconciledMap.set(key, {
           ...uploadItem,
-          name: uploadItem.name.replace(/^(12oz|16oz|20oz|24oz|32oz)\s+/i, "").trim(),
+          name: uploadItem.name
+            .replace(/^(12oz|16oz|20oz|24oz|32oz)\s+/i, "")
+            .trim(),
           source: "upload",
         });
         newFromWallCount++;
@@ -480,7 +764,10 @@ export default function BarMaidDashboard() {
 
     const reconciledItems = Array.from(reconciledMap.values());
     const finalModifiers = Array.from(unifiedModMap.values());
-    const collapsedMods = Math.max(0, totalRawModifiersCount - finalModifiers.length);
+    const collapsedMods = Math.max(
+      0,
+      totalRawModifiersCount - finalModifiers.length
+    );
 
     setStagedItems(reconciledItems);
     setStagedModifiers(finalModifiers);
@@ -492,63 +779,14 @@ export default function BarMaidDashboard() {
     });
   };
 
-  const getItemColor = (name: string): TileColor => {
-    if (/muffin|scone|cookie|burrito|bagel|pastry|food|sandwich|croissant|snack/i.test(name)) {
-      return "emerald";
-    }
-    if (/cold|iced|lotus|energy|redbull|rebel|tea|smoothie|soda|lemonade/i.test(name)) {
-      return "cyan";
-    }
-    return "amber";
-  };
-
   // Dynamic Elastic Partitioning: Automatically creates as many 20-slot pages as needed
   const handleReconcileAndPush = () => {
-    if (stagedItems.length === 0) {
+    if (stagedItems.length === 0 && stagedModifiers.length === 0) {
       setActiveTab("studio");
       return;
     }
 
-    // Sort items so core Espresso leads, Cold/Tea follows, Food follows
-    const sorted = [...stagedItems].sort((a, b) => {
-      const aType = getItemColor(a.name);
-      const bType = getItemColor(b.name);
-      const score = (t: TileColor) => (t === "amber" ? 1 : t === "cyan" ? 2 : 3);
-      return score(aType) - score(bType);
-    });
-
-    const totalPagesNeeded = Math.max(1, Math.ceil(sorted.length / 20));
-    const generatedPages: GridTile[][] = [];
-
-    for (let p = 0; p < totalPagesNeeded; p++) {
-      const startItemIdx = p * 20;
-      const endItemIdx = startItemIdx + 20;
-      const chunk = sorted.slice(startItemIdx, endItemIdx);
-      const startSlotId = p * 20 + 1;
-
-      const pageTiles: GridTile[] = Array.from({ length: 20 }, (_, i) => {
-        const item = chunk[i];
-        if (!item) {
-          return {
-            id: startSlotId + i,
-            label: "[ Empty Slot ]",
-            price: "",
-            color: "blank" as TileColor,
-          };
-        }
-
-        const primaryVar = item.variations[0];
-        return {
-          id: startSlotId + i,
-          label: `${primaryVar?.size ? primaryVar.size + " " : ""}${item.name}`,
-          price: primaryVar ? `$${primaryVar.price.toFixed(2)}` : "$4.50",
-          color: getItemColor(item.name),
-        };
-      });
-
-      generatedPages.push(pageTiles);
-    }
-
+    const generatedPages = buildPagesFromCatalog(stagedItems, stagedModifiers);
     setPages(generatedPages);
     setActivePageIndex(0);
     setSelectedTileId(1);
@@ -560,25 +798,39 @@ export default function BarMaidDashboard() {
     updateActiveTile({
       label: `${primaryVar?.size ? primaryVar.size + " " : ""}${item.name}`,
       price: primaryVar ? `$${primaryVar.price.toFixed(2)}` : "$4.50",
-      color: getItemColor(item.name),
+      color: getItemColor(item.name, item.categoryName),
+    });
+  };
+
+  const handleAssignModifierToTile = (mod: StagedModifier) => {
+    updateActiveTile({
+      label: `+ ${mod.name}`,
+      price: `+$${mod.price.toFixed(2)}`,
+      color: "slate",
     });
   };
 
   const handleDeploy = async () => {
     setDeployState("deploying");
-    setDeployMessage("Validating merchant_slug and location mapping...");
+    setDeployMessage(
+      `Validating merchant_slug (${merchantSlug}) and location mapping...`
+    );
 
     setTimeout(() => {
       setDeployMessage("Writing canonical records to Supabase tables...");
     }, 1200);
 
     setTimeout(() => {
-      setDeployMessage("Pushing updated layout coordinates to Square POS Cloud...");
+      setDeployMessage(
+        "Pushing updated layout coordinates to POS Cloud..."
+      );
     }, 2400);
 
     setTimeout(() => {
       setDeployState("success");
-      setDeployMessage("Layout and catalog deployed successfully to Konowac Coffee!");
+      setDeployMessage(
+        `Layout and catalog deployed successfully to ${merchantDisplayName} (${merchantSlug})!`
+      );
     }, 3600);
   };
 
@@ -601,57 +853,85 @@ export default function BarMaidDashboard() {
     .flat()
     .filter((t) => t.color !== "blank").length;
 
+  const connectedBadgeLabel =
+    posAuth?.provider === "clover" ? "Clover Connected" : "Square Connected";
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Top Application Bar */}
       <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center space-x-4">
-          <div className="h-9 w-9 rounded-lg bg-amber-600 flex items-center justify-center font-bold text-slate-950 text-xl shadow-md shadow-amber-600/20">
-            B
-          </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <span className="font-extrabold tracking-tight text-lg text-white">BarMaid</span>
-              <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">B2B POS Utility</span>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center space-x-3">
+            <div className="h-9 w-9 rounded-lg bg-amber-600 flex items-center justify-center font-bold text-slate-950 text-xl shadow-md shadow-amber-600/20">
+              B
             </div>
-            <p className="text-xs text-slate-400">D6 Digital LLC</p>
+            <div>
+              <div className="flex items-center space-x-2">
+                <span className="font-extrabold tracking-tight text-lg text-white">
+                  BarMaid
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
+                  B2B POS Utility
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">D6 Digital LLC</p>
+            </div>
           </div>
+
+          <Link
+            href="/onboard/connect"
+            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 hover:text-amber-200 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
+          >
+            <span>← Back to Onboarding Wizard (Step 3: POS Connect)</span>
+          </Link>
         </div>
 
         {/* Client Badges */}
-        <div className="flex items-center space-x-3">
-          <div className="bg-slate-800/80 border border-slate-700/60 rounded-full px-3 py-1 flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="bg-slate-800/80 border border-slate-700/60 rounded-full px-3.5 py-1.5 flex items-center space-x-2">
             <span className="text-xs text-slate-400">Client:</span>
-            <span className="text-xs font-semibold text-amber-400 font-mono">konowac-coffee</span>
+            <span className="text-xs font-semibold text-amber-400 font-mono">
+              {merchantSlug}
+            </span>
           </div>
-          <div className="bg-emerald-950/80 border border-emerald-800/60 text-emerald-300 rounded-full px-3 py-1 text-xs font-medium flex items-center space-x-2">
+          <div className="bg-emerald-950/80 border border-emerald-800/60 text-emerald-300 rounded-full px-3.5 py-1.5 text-xs font-medium flex items-center space-x-2">
             <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>Square Connected</span>
+            <span>{connectedBadgeLabel}</span>
           </div>
         </div>
       </header>
 
       {/* Workflow Navigation */}
       <nav className="border-b border-slate-800/80 bg-slate-900/50 px-6 py-2">
-        <div className="max-w-6xl mx-auto flex space-x-2 sm:space-x-4">
-          {[
-            { id: "intake", label: "1. Dual-Intake & Staging" },
-            { id: "audit", label: "2. Audit & Scoring" },
-            { id: "studio", label: "3. Ergonomics Studio" },
-            { id: "deploy", label: "4. Review & Deploy" },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as typeof activeTab)}
-              className={`px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-150 ${
-                activeTab === tab.id
-                  ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap gap-2 sm:gap-4">
+            {[
+              { id: "intake", label: "1. Dual-Intake & Staging" },
+              { id: "audit", label: "2. Audit & Scoring" },
+              { id: "studio", label: "3. Ergonomics Studio" },
+              { id: "deploy", label: "4. Review & Deploy" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as typeof activeTab)}
+                className={`px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-150 cursor-pointer ${
+                  activeTab === tab.id
+                    ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <span className="text-xs font-mono text-slate-400">
+            Active Catalog:{" "}
+            <strong className="text-amber-400">{stagedItems.length}</strong>{" "}
+            Items &middot;{" "}
+            <strong className="text-cyan-400">{stagedModifiers.length}</strong>{" "}
+            Modifiers
+          </span>
         </div>
       </nav>
 
@@ -660,11 +940,21 @@ export default function BarMaidDashboard() {
         {/* Step 1: Dual-Intake */}
         {activeTab === "intake" && (
           <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white">Dual-Intake Reconciliation</h1>
-              <p className="text-sm text-slate-400 mt-1">
-                Cross-references physical wall menu boards with your live Square register catalog to eliminate duplicates and sync accurate pricing.
-              </p>
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight text-white">
+                  Dual-Intake Reconciliation ({merchantSlug})
+                </h1>
+                <p className="text-sm text-slate-400 mt-1">
+                  Cross-references physical wall menu boards with your live register catalog to eliminate duplicates and sync accurate pricing.
+                </p>
+              </div>
+              <Link
+                href="/onboard/intake"
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-amber-300 transition"
+              >
+                Open 8-Step Onboarding Intake →
+              </Link>
             </div>
 
             {/* Live Catalog Metrics */}
@@ -672,18 +962,42 @@ export default function BarMaidDashboard() {
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="flex items-center space-x-3">
                   <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-                  <span className="text-xs font-semibold text-slate-300">Live Square Production Hardware Snapshot:</span>
+                  <span className="text-xs font-semibold text-slate-300">
+                    Live Square Production Hardware Snapshot:
+                  </span>
                 </div>
                 {loading ? (
-                  <span className="text-xs text-slate-500 animate-pulse">Querying register state...</span>
+                  <span className="text-xs text-slate-500 animate-pulse">
+                    Querying register state...
+                  </span>
                 ) : error ? (
                   <span className="text-xs text-rose-400">{error}</span>
                 ) : (
                   <div className="flex items-center space-x-4 text-xs font-mono">
-                    <span className="text-slate-400">Items: <strong className="text-white">{squareItems.length}</strong></span>
-                    <span className="text-slate-400">Categories: <strong className="text-amber-400">{squareCategories.length}</strong></span>
-                    <span className="text-slate-400">Modifier Sets: <strong className="text-white">{squareModifierLists.length}</strong></span>
-                    <span className="text-slate-400">Objects: <strong className="text-emerald-400">{squareTotalObjects}</strong></span>
+                    <span className="text-slate-400">
+                      Items:{" "}
+                      <strong className="text-white">
+                        {squareItems.length}
+                      </strong>
+                    </span>
+                    <span className="text-slate-400">
+                      Categories:{" "}
+                      <strong className="text-amber-400">
+                        {squareCategories.length}
+                      </strong>
+                    </span>
+                    <span className="text-slate-400">
+                      Modifier Sets:{" "}
+                      <strong className="text-white">
+                        {squareModifierLists.length}
+                      </strong>
+                    </span>
+                    <span className="text-slate-400">
+                      Objects:{" "}
+                      <strong className="text-emerald-400">
+                        {squareTotalObjects}
+                      </strong>
+                    </span>
                   </div>
                 )}
               </div>
@@ -712,7 +1026,9 @@ export default function BarMaidDashboard() {
                   <div className="flex justify-between items-start">
                     <div className="flex items-center space-x-2">
                       <span className="text-amber-400 text-lg">📷</span>
-                      <h2 className="text-base font-bold text-white">Dropzone A: Physical Menu Boards</h2>
+                      <h2 className="text-base font-bold text-white">
+                        Dropzone A: Physical Menu Boards
+                      </h2>
                     </div>
                     <span className="px-2.5 py-0.5 text-xs rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 font-mono">
                       {boardImages.length} Uploaded
@@ -726,8 +1042,15 @@ export default function BarMaidDashboard() {
                 {boardImages.length > 0 && (
                   <div className="flex gap-2 overflow-x-auto py-2">
                     {boardImages.map((img, i) => (
-                      <div key={i} className="h-16 w-16 rounded-lg border border-slate-700 overflow-hidden shrink-0 bg-slate-950">
-                        <img src={img} alt={`Board ${i + 1}`} className="h-full w-full object-cover" />
+                      <div
+                        key={i}
+                        className="h-16 w-16 rounded-lg border border-slate-700 overflow-hidden shrink-0 bg-slate-950"
+                      >
+                        <img
+                          src={img}
+                          alt={`Board ${i + 1}`}
+                          className="h-full w-full object-cover"
+                        />
                       </div>
                     ))}
                   </div>
@@ -736,7 +1059,7 @@ export default function BarMaidDashboard() {
                 <button
                   disabled={isProcessingOcr}
                   onClick={() => boardInputRef.current?.click()}
-                  className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2"
+                  className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2 cursor-pointer"
                 >
                   <span>+ Add Menu Board Image</span>
                 </button>
@@ -748,7 +1071,9 @@ export default function BarMaidDashboard() {
                   <div className="flex justify-between items-start">
                     <div className="flex items-center space-x-2">
                       <span className="text-cyan-400 text-lg">🖥️</span>
-                      <h2 className="text-base font-bold text-white">Dropzone B: Active POS Screenshot</h2>
+                      <h2 className="text-base font-bold text-white">
+                        Dropzone B: Active POS Screenshot
+                      </h2>
                     </div>
                     <span className="px-2.5 py-0.5 text-xs rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-mono">
                       {posScreenshots.length} Uploaded
@@ -762,8 +1087,15 @@ export default function BarMaidDashboard() {
                 {posScreenshots.length > 0 && (
                   <div className="flex gap-2 overflow-x-auto py-2">
                     {posScreenshots.map((img, i) => (
-                      <div key={i} className="h-16 w-16 rounded-lg border border-slate-700 overflow-hidden shrink-0 bg-slate-950">
-                        <img src={img} alt={`POS Screen ${i + 1}`} className="h-full w-full object-cover" />
+                      <div
+                        key={i}
+                        className="h-16 w-16 rounded-lg border border-slate-700 overflow-hidden shrink-0 bg-slate-950"
+                      >
+                        <img
+                          src={img}
+                          alt={`POS Screen ${i + 1}`}
+                          className="h-full w-full object-cover"
+                        />
                       </div>
                     ))}
                   </div>
@@ -772,7 +1104,7 @@ export default function BarMaidDashboard() {
                 <button
                   disabled={isProcessingOcr}
                   onClick={() => posInputRef.current?.click()}
-                  className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2"
+                  className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2 cursor-pointer"
                 >
                   <span>+ Add POS Screenshot</span>
                 </button>
@@ -783,7 +1115,9 @@ export default function BarMaidDashboard() {
             {isProcessingOcr && (
               <div className="p-4 bg-amber-950/30 border border-amber-500/40 rounded-xl flex items-center space-x-3 animate-pulse">
                 <div className="h-4 w-4 rounded-full border-2 border-amber-400 border-t-transparent animate-spin"></div>
-                <span className="text-xs text-amber-300 font-medium">{ocrStatusText}</span>
+                <span className="text-xs text-amber-300 font-medium">
+                  {ocrStatusText}
+                </span>
               </div>
             )}
 
@@ -791,23 +1125,29 @@ export default function BarMaidDashboard() {
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-md space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-base font-bold text-white">Staged Catalog Buffer</h2>
+                  <h2 className="text-base font-bold text-white">
+                    Staged Catalog Buffer ({merchantSlug})
+                  </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Unified buffer combining live Square items and wall board OCR extractions.
+                    Unified buffer combining onboarding extractions and live Square items.
                   </p>
                 </div>
                 <div className="flex items-center space-x-3">
                   <span className="text-xs font-mono text-slate-400">
-                    <strong className="text-white">{stagedItems.length}</strong> Items &middot;{" "}
-                    <strong className="text-amber-400">{stagedModifiers.length}</strong> Modifiers
+                    <strong className="text-white">{stagedItems.length}</strong>{" "}
+                    Items &middot;{" "}
+                    <strong className="text-amber-400">
+                      {stagedModifiers.length}
+                    </strong>{" "}
+                    Modifiers
                   </span>
 
                   <button
                     onClick={handleFullReconciliation}
-                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-lg transition flex items-center space-x-1.5 shadow-md shadow-amber-500/10"
+                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-lg transition flex items-center space-x-1.5 shadow-md shadow-amber-500/10 cursor-pointer"
                   >
                     <span>✨</span>
-                    <span>Reconcile, Deduplicate & Merge</span>
+                    <span>Reconcile, Deduplicate &amp; Merge</span>
                   </button>
 
                   {stagedItems.length > 0 && (
@@ -819,7 +1159,7 @@ export default function BarMaidDashboard() {
                         setPosScreenshots([]);
                         setReconcileReport(null);
                       }}
-                      className="text-xs text-rose-400 hover:underline"
+                      className="text-xs text-rose-400 hover:underline cursor-pointer"
                     >
                       Clear Buffer
                     </button>
@@ -832,24 +1172,42 @@ export default function BarMaidDashboard() {
                 <div className="p-4 bg-emerald-950/30 border border-emerald-500/40 rounded-xl space-y-2">
                   <div className="flex items-center space-x-2 text-xs font-bold text-emerald-400">
                     <span>✓</span>
-                    <span>Reconciliation Completed Across Square & Photo Uploads:</span>
+                    <span>
+                      Reconciliation Completed Across Square &amp; Photo Uploads:
+                    </span>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                     <div className="bg-slate-950/60 p-2 rounded-lg border border-emerald-800/40">
-                      <span className="text-[10px] uppercase font-mono text-slate-400">Matched & Merged</span>
-                      <p className="text-base font-bold text-emerald-300">{reconcileReport.matched} items</p>
+                      <span className="text-[10px] uppercase font-mono text-slate-400">
+                        Matched &amp; Merged
+                      </span>
+                      <p className="text-base font-bold text-emerald-300">
+                        {reconcileReport.matched} items
+                      </p>
                     </div>
                     <div className="bg-slate-950/60 p-2 rounded-lg border border-emerald-800/40">
-                      <span className="text-[10px] uppercase font-mono text-slate-400">New from Wall</span>
-                      <p className="text-base font-bold text-amber-400">{reconcileReport.newFromWall} items</p>
+                      <span className="text-[10px] uppercase font-mono text-slate-400">
+                        New from Wall
+                      </span>
+                      <p className="text-base font-bold text-amber-400">
+                        {reconcileReport.newFromWall} items
+                      </p>
                     </div>
                     <div className="bg-slate-950/60 p-2 rounded-lg border border-emerald-800/40">
-                      <span className="text-[10px] uppercase font-mono text-slate-400">Square Retained</span>
-                      <p className="text-base font-bold text-slate-200">{reconcileReport.retainedFromSquare} items</p>
+                      <span className="text-[10px] uppercase font-mono text-slate-400">
+                        Square Retained
+                      </span>
+                      <p className="text-base font-bold text-slate-200">
+                        {reconcileReport.retainedFromSquare} items
+                      </p>
                     </div>
                     <div className="bg-slate-950/60 p-2 rounded-lg border border-emerald-800/40">
-                      <span className="text-[10px] uppercase font-mono text-slate-400">Modifiers Collapsed</span>
-                      <p className="text-base font-bold text-cyan-300">{reconcileReport.modifiersCollapsed} duplicates</p>
+                      <span className="text-[10px] uppercase font-mono text-slate-400">
+                        Modifiers Collapsed
+                      </span>
+                      <p className="text-base font-bold text-cyan-300">
+                        {reconcileReport.modifiersCollapsed} duplicates
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -862,10 +1220,15 @@ export default function BarMaidDashboard() {
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-64 overflow-y-auto pr-2">
                   {stagedItems.map((item, idx) => (
-                    <div key={idx} className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3 flex flex-col justify-between">
+                    <div
+                      key={idx}
+                      className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3 flex flex-col justify-between"
+                    >
                       <div>
                         <div className="flex justify-between items-start">
-                          <span className="text-xs font-bold text-white leading-tight">{item.name}</span>
+                          <span className="text-xs font-bold text-white leading-tight">
+                            {item.name}
+                          </span>
                           <span
                             className={`text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ${
                               item.source === "reconciled"
@@ -878,11 +1241,16 @@ export default function BarMaidDashboard() {
                             {item.source}
                           </span>
                         </div>
-                        <p className="text-[10px] text-slate-400 mt-0.5">{item.categoryName}</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          {item.categoryName}
+                        </p>
                       </div>
                       <div className="mt-2 pt-2 border-t border-slate-900 flex flex-wrap gap-1">
                         {item.variations.map((v, vIdx) => (
-                          <span key={vIdx} className="text-[10px] font-mono text-amber-300 bg-amber-950/50 px-1.5 py-0.5 rounded">
+                          <span
+                            key={vIdx}
+                            className="text-[10px] font-mono text-amber-300 bg-amber-950/50 px-1.5 py-0.5 rounded"
+                          >
                             {v.size}: ${v.price.toFixed(2)}
                           </span>
                         ))}
@@ -899,9 +1267,11 @@ export default function BarMaidDashboard() {
                 </p>
                 <button
                   onClick={handleReconcileAndPush}
-                  className="px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center space-x-2"
+                  className="px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
                 >
-                  <span>Proceed to Studio with All {stagedItems.length} Items</span>
+                  <span>
+                    Proceed to Studio with All {stagedItems.length} Items
+                  </span>
                   <span>→</span>
                 </button>
               </div>
@@ -913,19 +1283,29 @@ export default function BarMaidDashboard() {
         {activeTab === "audit" && (
           <div className="space-y-6">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white">Catalog Audit & Friction Diagnostics</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-white">
+                Catalog Audit &amp; Friction Diagnostics
+              </h1>
               <p className="text-sm text-slate-400 mt-1">
-                Objective analysis of counter tap friction, modifier redundancies, and screen ergonomics for Konowac Coffee.
+                Objective analysis of counter tap friction, modifier redundancies, and screen ergonomics for{" "}
+                <span className="text-amber-400 font-semibold">
+                  {merchantDisplayName}
+                </span>{" "}
+                (<span className="font-mono">{merchantSlug}</span>).
               </p>
             </div>
 
             {/* Health Meter */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="md:col-span-1 bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col justify-center items-center text-center">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Register Health Score</span>
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Register Health Score
+                </span>
                 <div className="mt-3 relative flex items-center justify-center">
                   <div className="w-24 h-24 rounded-full border-4 border-amber-500/20 border-t-amber-500 flex items-center justify-center">
-                    <span className="text-3xl font-black text-amber-400">74</span>
+                    <span className="text-3xl font-black text-amber-400">
+                      74
+                    </span>
                   </div>
                 </div>
                 <span className="text-xs font-medium text-amber-400/90 mt-2 bg-amber-500/10 px-2 py-0.5 rounded-full">
@@ -935,21 +1315,39 @@ export default function BarMaidDashboard() {
 
               <div className="md:col-span-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col justify-between">
-                  <span className="text-xs font-medium text-slate-400">Average Barista Taps</span>
-                  <p className="text-2xl font-extrabold text-white mt-2">4.2 taps</p>
-                  <p className="text-xs text-rose-400 mt-1 font-medium">Target: ≤ 2.0 taps</p>
-                </div>
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col justify-between">
-                  <span className="text-xs font-medium text-slate-400">Modifier Redundancy</span>
-                  <p className="text-2xl font-extrabold text-amber-400 mt-2">
-                    {stagedModifiers.length > 0 ? "Unified" : "0 duplicates"}
+                  <span className="text-xs font-medium text-slate-400">
+                    Average Barista Taps
+                  </span>
+                  <p className="text-2xl font-extrabold text-white mt-2">
+                    4.2 taps
                   </p>
-                  <p className="text-xs text-emerald-400 mt-1 font-medium">Standard Dairy group active</p>
+                  <p className="text-xs text-rose-400 mt-1 font-medium">
+                    Target: ≤ 2.0 taps
+                  </p>
                 </div>
                 <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col justify-between">
-                  <span className="text-xs font-medium text-slate-400">Staged Buffer Items</span>
-                  <p className="text-2xl font-extrabold text-emerald-400 mt-2">{stagedItems.length} items</p>
-                  <p className="text-xs text-emerald-400 mt-1 font-medium">Heuristic sizes mapped</p>
+                  <span className="text-xs font-medium text-slate-400">
+                    Modifier Redundancy
+                  </span>
+                  <p className="text-2xl font-extrabold text-amber-400 mt-2">
+                    {stagedModifiers.length > 0
+                      ? `${stagedModifiers.length} Unified`
+                      : "0 duplicates"}
+                  </p>
+                  <p className="text-xs text-emerald-400 mt-1 font-medium">
+                    Standard Dairy group active
+                  </p>
+                </div>
+                <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col justify-between">
+                  <span className="text-xs font-medium text-slate-400">
+                    Staged Buffer Items
+                  </span>
+                  <p className="text-2xl font-extrabold text-emerald-400 mt-2">
+                    {stagedItems.length} items
+                  </p>
+                  <p className="text-xs text-emerald-400 mt-1 font-medium">
+                    Heuristic sizes mapped
+                  </p>
                 </div>
               </div>
             </div>
@@ -958,11 +1356,13 @@ export default function BarMaidDashboard() {
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
               <div className="text-xs text-slate-400">
                 <span>Selected Layout Template: </span>
-                <strong className="text-amber-400 uppercase font-mono">{selectedArchetype}</strong>
+                <strong className="text-amber-400 uppercase font-mono">
+                  {selectedArchetype}
+                </strong>
               </div>
               <button
                 onClick={() => setActiveTab("studio")}
-                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-lg shadow-md shadow-amber-500/20 transition flex items-center space-x-2"
+                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-lg shadow-md shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
               >
                 <span>Proceed to Ergonomics Studio</span>
                 <span>→</span>
@@ -976,41 +1376,70 @@ export default function BarMaidDashboard() {
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h1 className="text-2xl font-bold tracking-tight text-white">Register Ergonomics Studio</h1>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h1 className="text-2xl font-bold tracking-tight text-white">
+                    Register Ergonomics Studio
+                  </h1>
+                  <span className="px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-mono">
+                    {merchantSlug}
+                  </span>
+                </div>
                 <p className="text-sm text-slate-400 mt-1">
-                  Elastic 5×4 counter matrix holding all {stagedItems.length || totalAssignedTiles} items across {pages.length} screen pages.
+                  Elastic 5×4 counter matrix holding{" "}
+                  {stagedItems.length || totalAssignedTiles} catalog items &amp;{" "}
+                  {stagedModifiers.length} modifiers across {pages.length} screen
+                  pages.
                 </p>
               </div>
 
               {/* Archetype Quick Switcher & Grid Actions */}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="flex items-center space-x-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
-                  {(["fast-cash", "specialty", "color-coded"] as ArchetypeId[]).map((arch) => (
+                  {(
+                    ["fast-cash", "specialty", "color-coded"] as ArchetypeId[]
+                  ).map((arch) => (
                     <button
                       key={arch}
-                      onClick={() => setSelectedArchetype(arch)}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition ${
+                      onClick={() => {
+                        setSelectedArchetype(arch);
+                        applyPreset(arch);
+                      }}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition cursor-pointer ${
                         selectedArchetype === arch
                           ? "bg-amber-500 text-slate-950 font-bold"
                           : "text-slate-400 hover:text-white"
                       }`}
                     >
-                      {arch === "fast-cash" ? "Fast-Cash" : arch === "specialty" ? "Specialty" : "Color-Zoned"}
+                      {arch === "fast-cash"
+                        ? "Fast-Cash"
+                        : arch === "specialty"
+                        ? "Specialty"
+                        : "Color-Zoned"}
                     </button>
                   ))}
                 </div>
 
+                {(stagedItems.length > 0 || stagedModifiers.length > 0) && (
+                  <button
+                    onClick={handleLoadStagedIntoMatrix}
+                    title="Populate matrix with staged tenant catalog"
+                    className="px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 rounded-lg text-xs font-semibold transition cursor-pointer"
+                  >
+                    ⟳ Load Staged ({stagedItems.length + stagedModifiers.length})
+                  </button>
+                )}
+
                 <button
                   onClick={handleResetToDefault}
                   title="Restore default archetype layout"
-                  className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold transition"
+                  className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer"
                 >
                   ↺ Default Preset
                 </button>
                 <button
                   onClick={handleClearAllTiles}
                   title="Set all slots across all pages to empty dashed tiles"
-                  className="px-3 py-1.5 bg-slate-900 hover:bg-rose-950/40 border border-slate-700 hover:border-rose-500/50 text-slate-400 hover:text-rose-300 rounded-lg text-xs font-semibold transition"
+                  className="px-3 py-1.5 bg-slate-900 hover:bg-rose-950/40 border border-slate-700 hover:border-rose-500/50 text-slate-400 hover:text-rose-300 rounded-lg text-xs font-semibold transition cursor-pointer"
                 >
                   ✕ Clear All Tiles
                 </button>
@@ -1036,7 +1465,7 @@ export default function BarMaidDashboard() {
                               setActivePageIndex(pIdx);
                               setSelectedTileId(pages[pIdx]?.[0]?.id || start);
                             }}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                               isCurrent
                                 ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20"
                                 : "bg-slate-800 text-slate-400 hover:text-white"
@@ -1050,7 +1479,7 @@ export default function BarMaidDashboard() {
                       <button
                         onClick={handleAddPage}
                         title="Add an additional empty 20-slot page"
-                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-950 hover:bg-slate-800 border border-dashed border-slate-700 text-amber-400 hover:text-amber-300 transition"
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-950 hover:bg-slate-800 border border-dashed border-slate-700 text-amber-400 hover:text-amber-300 transition cursor-pointer"
                       >
                         + Add Page
                       </button>
@@ -1069,7 +1498,7 @@ export default function BarMaidDashboard() {
                         <button
                           key={tile.id}
                           onClick={() => setSelectedTileId(tile.id)}
-                          className={`h-20 sm:h-24 p-2 rounded-xl border flex flex-col justify-between text-left transition-all duration-150 ${getColorClasses(
+                          className={`h-20 sm:h-24 p-2 rounded-xl border flex flex-col justify-between text-left transition-all duration-150 cursor-pointer ${getColorClasses(
                             tile.color
                           )} ${
                             isSelected
@@ -1092,19 +1521,28 @@ export default function BarMaidDashboard() {
                 {/* Studio Live Diagnostics Footprint */}
                 <div className="mt-6 pt-4 border-t border-slate-800/80 grid grid-cols-3 gap-3 text-center">
                   <div className="bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/60">
-                    <span className="text-[10px] uppercase font-mono text-slate-400">Thumb Reach</span>
-                    <p className="text-sm font-bold text-emerald-400">96% High Velocity</p>
-                  </div>
-                  <div className="bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/60">
-                    <span className="text-[10px] uppercase font-mono text-slate-400">Current Page Slots</span>
-                    <p className="text-sm font-bold text-amber-400">
-                      {currentTiles.filter((t) => t.color !== "blank").length} / 20
+                    <span className="text-[10px] uppercase font-mono text-slate-400">
+                      Thumb Reach
+                    </span>
+                    <p className="text-sm font-bold text-emerald-400">
+                      96% High Velocity
                     </p>
                   </div>
                   <div className="bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/60">
-                    <span className="text-[10px] uppercase font-mono text-slate-400">Total Placed</span>
+                    <span className="text-[10px] uppercase font-mono text-slate-400">
+                      Current Page Slots
+                    </span>
+                    <p className="text-sm font-bold text-amber-400">
+                      {currentTiles.filter((t) => t.color !== "blank").length} /
+                      20
+                    </p>
+                  </div>
+                  <div className="bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/60">
+                    <span className="text-[10px] uppercase font-mono text-slate-400">
+                      Total Placed
+                    </span>
                     <p className="text-sm font-bold text-white">
-                      {totalAssignedTiles} / {stagedItems.length || totalAssignedTiles} Items
+                      {totalAssignedTiles} Active Buttons
                     </p>
                   </div>
                 </div>
@@ -1114,7 +1552,9 @@ export default function BarMaidDashboard() {
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between space-y-6">
                 <div className="space-y-4">
                   <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                    <h3 className="font-bold text-white text-base">Tile Inspector</h3>
+                    <h3 className="font-bold text-white text-base">
+                      Tile Inspector
+                    </h3>
                     <div className="flex items-center space-x-2">
                       <span className="text-xs font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded">
                         Slot #{activeTile.id}
@@ -1122,7 +1562,7 @@ export default function BarMaidDashboard() {
                       <button
                         onClick={handleClearCurrentTile}
                         title="Clear this tile to an empty slot"
-                        className="text-xs text-slate-400 hover:text-rose-400 font-mono transition"
+                        className="text-xs text-slate-400 hover:text-rose-400 font-mono transition cursor-pointer"
                       >
                         [Clear Slot]
                       </button>
@@ -1137,8 +1577,10 @@ export default function BarMaidDashboard() {
                     <input
                       type="text"
                       value={activeTile.label}
-                      onChange={(e) => updateActiveTile({ label: e.target.value })}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500 font-medium"
+                      onChange={(e) =>
+                        updateActiveTile({ label: e.target.value })
+                      }
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-base sm:text-sm text-white focus:outline-none focus:border-amber-500 font-medium"
                     />
                   </div>
 
@@ -1150,8 +1592,10 @@ export default function BarMaidDashboard() {
                     <input
                       type="text"
                       value={activeTile.price}
-                      onChange={(e) => updateActiveTile({ price: e.target.value })}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500 font-mono"
+                      onChange={(e) =>
+                        updateActiveTile({ price: e.target.value })
+                      }
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-base sm:text-sm text-white focus:outline-none focus:border-amber-500 font-mono"
                     />
                   </div>
 
@@ -1162,46 +1606,86 @@ export default function BarMaidDashboard() {
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       {[
-                        { id: "amber", label: "Espresso Bar", dot: "bg-amber-500" },
-                        { id: "cyan", label: "Cold Drinks", dot: "bg-cyan-500" },
-                        { id: "emerald", label: "Bakery / Food", dot: "bg-emerald-500" },
-                        { id: "slate", label: "Universal Add-on", dot: "bg-slate-400" },
-                        { id: "blank", label: "Empty Spacer", dot: "bg-slate-700" },
+                        {
+                          id: "amber",
+                          label: "Espresso Bar",
+                          dot: "bg-amber-500",
+                        },
+                        {
+                          id: "cyan",
+                          label: "Cold Drinks",
+                          dot: "bg-cyan-500",
+                        },
+                        {
+                          id: "emerald",
+                          label: "Bakery / Food",
+                          dot: "bg-emerald-500",
+                        },
+                        {
+                          id: "slate",
+                          label: "Modifier / Retail",
+                          dot: "bg-slate-400",
+                        },
+                        {
+                          id: "blank",
+                          label: "Empty Spacer",
+                          dot: "bg-slate-700",
+                        },
                       ].map((c) => (
                         <button
                           key={c.id}
-                          onClick={() => updateActiveTile({ color: c.id as TileColor })}
-                          className={`flex items-center space-x-2 px-3 py-2 rounded-lg border text-xs font-medium transition ${
+                          onClick={() =>
+                            updateActiveTile({ color: c.id as TileColor })
+                          }
+                          className={`flex items-center space-x-2 px-3 py-2 rounded-lg border text-xs font-medium transition cursor-pointer ${
                             activeTile.color === c.id
                               ? "bg-slate-800 border-white text-white font-bold"
                               : "bg-slate-950/60 border-slate-800 text-slate-400 hover:text-white"
                           }`}
                         >
-                          <span className={`h-2.5 w-2.5 rounded-full ${c.dot}`}></span>
+                          <span
+                            className={`h-2.5 w-2.5 rounded-full ${c.dot}`}
+                          ></span>
                           <span>{c.label}</span>
                         </button>
                       ))}
                     </div>
                   </div>
 
-                  {/* Staged Items Tray */}
-                  {stagedItems.length > 0 && (
-                    <div className="pt-2 border-t border-slate-800/80">
-                      <label className="text-xs font-medium text-slate-300 block mb-2">
-                        Quick-Assign from Staged Catalog ({stagedItems.length} Available)
+                  {/* Staged Items & Modifiers Quick-Assign Tray */}
+                  {(stagedItems.length > 0 || stagedModifiers.length > 0) && (
+                    <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                      <label className="text-xs font-medium text-slate-300 block">
+                        Quick-Assign from {merchantSlug} Catalog (
+                        {stagedItems.length} Drinks/Food &middot;{" "}
+                        {stagedModifiers.length} Mods)
                       </label>
                       <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
                         {stagedItems.map((item, idx) => (
                           <button
-                            key={idx}
+                            key={`item-${idx}`}
                             onClick={() => handleAssignItemToTile(item)}
-                            className="w-full text-left bg-slate-950 hover:bg-slate-800 border border-slate-800/80 hover:border-amber-500/50 rounded-lg px-2.5 py-1.5 flex items-center justify-between text-xs transition"
+                            className="w-full text-left bg-slate-950 hover:bg-slate-800 border border-slate-800/80 hover:border-amber-500/50 rounded-lg px-2.5 py-1.5 flex items-center justify-between text-xs transition cursor-pointer"
                           >
                             <span className="font-semibold text-slate-200 truncate pr-2">
                               {item.name}
                             </span>
                             <span className="text-[10px] font-mono text-amber-400 shrink-0">
                               ${item.variations[0]?.price.toFixed(2) || "4.50"}
+                            </span>
+                          </button>
+                        ))}
+                        {stagedModifiers.map((mod, idx) => (
+                          <button
+                            key={`mod-${idx}`}
+                            onClick={() => handleAssignModifierToTile(mod)}
+                            className="w-full text-left bg-slate-950/80 hover:bg-slate-800 border border-slate-800/60 hover:border-cyan-500/50 rounded-lg px-2.5 py-1.5 flex items-center justify-between text-xs transition cursor-pointer"
+                          >
+                            <span className="font-medium text-cyan-300 truncate pr-2">
+                              + {mod.name}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                              +${mod.price.toFixed(2)}
                             </span>
                           </button>
                         ))}
@@ -1214,13 +1698,14 @@ export default function BarMaidDashboard() {
                 <div className="pt-4 border-t border-slate-800 space-y-2">
                   <button
                     onClick={() => setActiveTab("deploy")}
-                    className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center justify-center space-x-2"
+                    className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center justify-center space-x-2 cursor-pointer"
                   >
-                    <span>Lock Layout & Proceed</span>
+                    <span>Lock Layout &amp; Proceed</span>
                     <span>→</span>
                   </button>
                   <p className="text-[11px] text-center text-slate-500">
-                    Saves all {pages.length} screen pages for live register blueprint.
+                    Saves all {pages.length} screen pages for live register
+                    blueprint.
                   </p>
                 </div>
               </div>
@@ -1232,35 +1717,69 @@ export default function BarMaidDashboard() {
         {activeTab === "deploy" && (
           <div className="space-y-6">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white">Review & Production Deploy</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-white">
+                Review &amp; Production Deploy
+              </h1>
               <p className="text-sm text-slate-400 mt-1">
-                Final verification before publishing optimized button coordinates to Konowac Coffee&apos;s live Square POS and exporting canonical records to Supabase.
+                Final verification before publishing optimized button coordinates to{" "}
+                <span className="text-amber-400 font-semibold">
+                  {merchantDisplayName}
+                </span>
+                &apos;s live POS and exporting canonical records to Supabase.
               </p>
             </div>
 
             {/* Pre-Flight Status Checklist */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-md">
-              <h2 className="text-base font-semibold text-white mb-4">Pre-Flight Architecture Verification</h2>
+              <h2 className="text-base font-semibold text-white mb-4">
+                Pre-Flight Architecture Verification
+              </h2>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl">
-                  <span className="text-xs text-slate-500 uppercase font-mono">Client Slug</span>
-                  <p className="text-base font-bold text-amber-400 font-mono mt-1">konowac-coffee</p>
-                  <span className="text-[11px] text-emerald-400 mt-1 block">Strictly Scoped</span>
+                  <span className="text-xs text-slate-500 uppercase font-mono">
+                    Client Slug
+                  </span>
+                  <p className="text-base font-bold text-amber-400 font-mono mt-1">
+                    {merchantSlug}
+                  </p>
+                  <span className="text-[11px] text-emerald-400 mt-1 block">
+                    Strictly Scoped
+                  </span>
                 </div>
                 <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl">
-                  <span className="text-xs text-slate-500 uppercase font-mono">Location ID</span>
-                  <p className="text-base font-bold text-white font-mono mt-1">L5EHSZ75ZGX44</p>
-                  <span className="text-[11px] text-emerald-400 mt-1 block">Production Target</span>
+                  <span className="text-xs text-slate-500 uppercase font-mono">
+                    POS Target
+                  </span>
+                  <p className="text-base font-bold text-white font-mono mt-1">
+                    {posAuth?.provider === "clover"
+                      ? "Clover REST v3"
+                      : "Square Cloud v2"}
+                  </p>
+                  <span className="text-[11px] text-emerald-400 mt-1 block">
+                    Production Target
+                  </span>
                 </div>
                 <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl">
-                  <span className="text-xs text-slate-500 uppercase font-mono">Grid Pages</span>
-                  <p className="text-base font-bold text-white mt-1">{pages.length} Pages ({pages.length * 20} Slots)</p>
-                  <span className="text-[11px] text-slate-400 mt-1 block">{totalAssignedTiles} Active Buttons</span>
+                  <span className="text-xs text-slate-500 uppercase font-mono">
+                    Grid Pages
+                  </span>
+                  <p className="text-base font-bold text-white mt-1">
+                    {pages.length} Pages ({pages.length * 20} Slots)
+                  </p>
+                  <span className="text-[11px] text-slate-400 mt-1 block">
+                    {totalAssignedTiles} Active Buttons
+                  </span>
                 </div>
                 <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl">
-                  <span className="text-xs text-slate-500 uppercase font-mono">SipPass Handshake</span>
-                  <p className="text-base font-bold text-emerald-400 mt-1">Canonical Sync</p>
-                  <span className="text-[11px] text-emerald-400 mt-1 block">Ready to Write</span>
+                  <span className="text-xs text-slate-500 uppercase font-mono">
+                    SipPass Handshake
+                  </span>
+                  <p className="text-base font-bold text-emerald-400 mt-1">
+                    Canonical Sync
+                  </p>
+                  <span className="text-[11px] text-emerald-400 mt-1 block">
+                    Ready to Write
+                  </span>
                 </div>
               </div>
             </div>
@@ -1273,18 +1792,38 @@ export default function BarMaidDashboard() {
                   <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                     <div className="flex items-center space-x-2">
                       <span className="h-2.5 w-2.5 rounded-full bg-amber-400"></span>
-                      <h3 className="font-bold text-white text-base">Square POS Register Payload</h3>
+                      <h3 className="font-bold text-white text-base">
+                        POS Register Payload
+                      </h3>
                     </div>
-                    <span className="text-xs font-mono text-slate-400">Live API</span>
+                    <span className="text-xs font-mono text-slate-400">
+                      Live API
+                    </span>
                   </div>
                   <p className="text-xs text-slate-400 mt-3 leading-relaxed">
-                    Updates the Favorites layout coordinates on Konowac Coffee&apos;s physical iPad register across all {pages.length} pages.
+                    Updates the Favorites layout coordinates on{" "}
+                    {merchantDisplayName}&apos;s physical iPad register across
+                    all {pages.length} pages.
                   </p>
                   <div className="mt-4 bg-slate-950 border border-slate-800/80 rounded-lg p-3 font-mono text-xs text-slate-300 space-y-1">
-                    <p><span className="text-slate-500">endpoint:</span> /v2/catalog/batch-upsert</p>
-                    <p><span className="text-slate-500">pages_configured:</span> {pages.length} dynamic pages</p>
-                    <p><span className="text-slate-500">total_active_hotkeys:</span> {totalAssignedTiles}</p>
-                    <p><span className="text-slate-500">target_device:</span> iPad Point of Sale</p>
+                    <p>
+                      <span className="text-slate-500">endpoint:</span>{" "}
+                      /v2/catalog/batch-upsert
+                    </p>
+                    <p>
+                      <span className="text-slate-500">pages_configured:</span>{" "}
+                      {pages.length} dynamic pages
+                    </p>
+                    <p>
+                      <span className="text-slate-500">
+                        total_active_hotkeys:
+                      </span>{" "}
+                      {totalAssignedTiles}
+                    </p>
+                    <p>
+                      <span className="text-slate-500">target_device:</span>{" "}
+                      iPad Point of Sale
+                    </p>
                   </div>
                 </div>
                 <div className="mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400">
@@ -1298,18 +1837,34 @@ export default function BarMaidDashboard() {
                   <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                     <div className="flex items-center space-x-2">
                       <span className="h-2.5 w-2.5 rounded-full bg-emerald-400"></span>
-                      <h3 className="font-bold text-white text-base">Supabase Canonical Export</h3>
+                      <h3 className="font-bold text-white text-base">
+                        Supabase Canonical Export
+                      </h3>
                     </div>
-                    <span className="text-xs font-mono text-slate-400">Shared DB</span>
+                    <span className="text-xs font-mono text-slate-400">
+                      Shared DB
+                    </span>
                   </div>
                   <p className="text-xs text-slate-400 mt-3 leading-relaxed">
                     Pushes the normalized, deduplicated menu to Supabase so SipPass consumer ordering can read the identical drink and modifier catalog.
                   </p>
                   <div className="mt-4 bg-slate-950 border border-slate-800/80 rounded-lg p-3 font-mono text-xs text-slate-300 space-y-1">
-                    <p><span className="text-slate-500">table:</span> public.menu_items</p>
-                    <p><span className="text-slate-500">filter:</span> merchant_slug = &apos;konowac-coffee&apos;</p>
-                    <p><span className="text-slate-500">modifiers:</span> standard_dairy_v1</p>
-                    <p><span className="text-slate-500">app_contract:</span> Read-only for SipPass</p>
+                    <p>
+                      <span className="text-slate-500">table:</span>{" "}
+                      public.menu_items
+                    </p>
+                    <p>
+                      <span className="text-slate-500">filter:</span>{" "}
+                      merchant_slug = &apos;{merchantSlug}&apos;
+                    </p>
+                    <p>
+                      <span className="text-slate-500">modifiers:</span>{" "}
+                      standard_dairy_v1
+                    </p>
+                    <p>
+                      <span className="text-slate-500">app_contract:</span>{" "}
+                      Read-only for SipPass
+                    </p>
                   </div>
                 </div>
                 <div className="mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400">
@@ -1323,16 +1878,19 @@ export default function BarMaidDashboard() {
               {deployState === "idle" && (
                 <>
                   <div>
-                    <h3 className="text-lg font-bold text-white">Ready to Deploy</h3>
+                    <h3 className="text-lg font-bold text-white">
+                      Ready to Deploy ({merchantSlug})
+                    </h3>
                     <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-                      Click below to broadcast the {pages.length}-page layout to the counter register and finalize the catalog in Supabase.
+                      Click below to broadcast the {pages.length}-page layout to
+                      the counter register and finalize the catalog in Supabase.
                     </p>
                   </div>
                   <button
                     onClick={handleDeploy}
-                    className="px-8 py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center space-x-2"
+                    className="px-8 py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
                   >
-                    <span>🚀 Deploy Layout to Square POS</span>
+                    <span>🚀 Deploy Layout to POS Cloud</span>
                   </button>
                 </>
               )}
@@ -1340,8 +1898,12 @@ export default function BarMaidDashboard() {
               {deployState === "deploying" && (
                 <div className="py-4 space-y-3">
                   <div className="h-8 w-8 border-3 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-                  <p className="text-sm font-semibold text-amber-400">{deployMessage}</p>
-                  <p className="text-xs text-slate-500 font-mono">Syncing cloud state...</p>
+                  <p className="text-sm font-semibold text-amber-400">
+                    {deployMessage}
+                  </p>
+                  <p className="text-xs text-slate-500 font-mono">
+                    Syncing cloud state...
+                  </p>
                 </div>
               )}
 
@@ -1350,20 +1912,22 @@ export default function BarMaidDashboard() {
                   <div className="h-12 w-12 rounded-full bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center text-emerald-400 text-2xl mx-auto">
                     ✓
                   </div>
-                  <h3 className="text-lg font-bold text-white">Deployment Complete!</h3>
+                  <h3 className="text-lg font-bold text-white">
+                    Deployment Complete!
+                  </h3>
                   <p className="text-xs text-emerald-300 font-medium max-w-md mx-auto">
                     {deployMessage}
                   </p>
                   <div className="pt-2 flex justify-center space-x-3">
                     <button
                       onClick={() => setDeployState("idle")}
-                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg border border-slate-700 transition"
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg border border-slate-700 transition cursor-pointer"
                     >
                       Deploy Another Iteration
                     </button>
                     <button
                       onClick={() => setActiveTab("studio")}
-                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-lg transition"
+                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-lg transition cursor-pointer"
                     >
                       Return to Studio
                     </button>
