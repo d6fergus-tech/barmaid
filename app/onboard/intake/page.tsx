@@ -1,13 +1,25 @@
 "use client";
 
-import React, { useState, useRef, useMemo, ChangeEvent, DragEvent, MouseEvent } from "react";
+import React, {
+  useState,
+  useRef,
+  useMemo,
+  useEffect,
+  useCallback,
+  ChangeEvent,
+  DragEvent,
+  MouseEvent,
+} from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type {
   InvoiceOcrResponse,
   InvoiceRetailItem,
   InvoiceModifierOption,
   InvoiceOperationalSupply,
 } from "@/app/api/ocr/invoice/route";
+
+export const INTAKE_STAGE_STORAGE_KEY = "barmaid_intake_stage";
 
 type DropzoneKey = "license" | "menu" | "invoice";
 
@@ -22,23 +34,35 @@ interface UploadedAsset {
   errorMessage?: string;
 }
 
-interface StoreIdentity {
+export interface StoreProfileData {
   legalName: string;
   dbaName: string;
-  address: string;
+  merchantSlug: string;
+  streetAddress: string;
   city: string;
   state: string;
-  zip: string;
-  suggestedSlug: string;
-  sourceFileId?: string;
+  zipCode: string;
 }
 
-interface MenuVariation {
+export interface StagedCountsData {
+  drinksCount: number;
+  modifiersCount: number;
+  retailCount: number;
+  suppliesCount: number;
+}
+
+export interface UploadedFileNamesData {
+  license: string[];
+  menus: string[];
+  invoices: string[];
+}
+
+export interface MenuVariation {
   size: string;
   price: number;
 }
 
-interface StagedMenuItem {
+export interface StagedMenuItem {
   id: string;
   name: string;
   categoryName: string;
@@ -47,7 +71,7 @@ interface StagedMenuItem {
   sourceFileName: string;
 }
 
-interface StagedRetailItem extends InvoiceRetailItem {
+export interface StagedRetailItem extends InvoiceRetailItem {
   id: string;
   vendorName: string;
   included: boolean;
@@ -55,7 +79,7 @@ interface StagedRetailItem extends InvoiceRetailItem {
   sourceFileName: string;
 }
 
-interface StagedModifierOption extends InvoiceModifierOption {
+export interface StagedModifierOption extends InvoiceModifierOption {
   id: string;
   vendorName: string;
   included: boolean;
@@ -63,12 +87,24 @@ interface StagedModifierOption extends InvoiceModifierOption {
   sourceFileName: string;
 }
 
-interface StagedSupplyItem extends InvoiceOperationalSupply {
+export interface StagedSupplyItem extends InvoiceOperationalSupply {
   id: string;
   vendorName: string;
   included: boolean;
   classification: "operational_supply";
   sourceFileName: string;
+}
+
+export interface IntakeStageData {
+  storeProfile: StoreProfileData;
+  stagedCounts: StagedCountsData;
+  stagedItems: StagedMenuItem[];
+  modifiers?: StagedModifierOption[];
+  retailItems?: StagedRetailItem[];
+  supplies?: StagedSupplyItem[];
+  uploadedFileNames: UploadedFileNamesData;
+  licenseDetected?: boolean;
+  stagedAt?: string;
 }
 
 interface MenuOcrApiResponse {
@@ -96,7 +132,18 @@ interface MenuOcrApiResponse {
 interface LicenseOcrApiResponse {
   success?: boolean;
   error?: string;
-  data?: Partial<StoreIdentity>;
+  data?: {
+    legalName?: string;
+    dbaName?: string;
+    address?: string;
+    streetAddress?: string;
+    city?: string;
+    state?: string;
+    zip?: string;
+    zipCode?: string;
+    suggestedSlug?: string;
+    merchantSlug?: string;
+  };
 }
 
 const MODIFIER_GROUPS = [
@@ -108,17 +155,17 @@ const MODIFIER_GROUPS = [
   "Sweeteners & Toppings",
 ] as const;
 
-const INITIAL_IDENTITY: StoreIdentity = {
-  legalName: "Konnowac Coffee Roasters LLC",
-  dbaName: "Konnowac Coffee",
-  address: "412 Yakima Valley Hwy",
-  city: "Zillah",
-  state: "WA",
-  zip: "98953",
-  suggestedSlug: "konnowac-coffee",
+const EMPTY_STORE_PROFILE: StoreProfileData = {
+  legalName: "",
+  dbaName: "",
+  merchantSlug: "",
+  streetAddress: "",
+  city: "",
+  state: "",
+  zipCode: "",
 };
 
-function toSlug(input: string): string {
+export function toSlug(input: string): string {
   return input
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -143,31 +190,319 @@ function formatFileCountBadge(count: number): string {
 }
 
 export default function MultiSourceIntakeStagingPage() {
-  // Multi-file upload state per dropzone
+  const router = useRouter();
+
+  // Multi-file upload state per dropzone (empty starting slate before hydration)
   const [licenseFiles, setLicenseFiles] = useState<UploadedAsset[]>([]);
   const [menuFiles, setMenuFiles] = useState<UploadedAsset[]>([]);
   const [invoiceFiles, setInvoiceFiles] = useState<UploadedAsset[]>([]);
 
-  // Staged extracted data
-  const [storeIdentity, setStoreIdentity] = useState<StoreIdentity>(INITIAL_IDENTITY);
+  // Uncontrolled DOM refs for Detected Store Info inputs:
+  // Zero React state updates on keystroke -> zero viewport jumping or focus loss on iPad Safari
+  const legalNameRef = useRef<HTMLInputElement>(null);
+  const dbaNameRef = useRef<HTMLInputElement>(null);
+  const slugRef = useRef<HTMLInputElement>(null);
+  const addressRef = useRef<HTMLInputElement>(null);
+  const cityRef = useRef<HTMLInputElement>(null);
+  const stateRef = useRef<HTMLInputElement>(null);
+  const zipRef = useRef<HTMLInputElement>(null);
+  const slugManuallyEditedRef = useRef<boolean>(false);
+  const storeProfileRef = useRef<StoreProfileData>({ ...EMPTY_STORE_PROFILE });
+  const isHydratedRef = useRef<boolean>(false);
+
+  const [activeSlugBadge, setActiveSlugBadge] = useState<string>("");
   const [licenseDetected, setLicenseDetected] = useState<boolean>(false);
 
+  // Staged extracted data (empty starting slate before hydration)
   const [stagedMenuItems, setStagedMenuItems] = useState<StagedMenuItem[]>([]);
   const [stagedRetailItems, setStagedRetailItems] = useState<StagedRetailItem[]>([]);
   const [stagedModifiers, setStagedModifiers] = useState<StagedModifierOption[]>([]);
   const [stagedSupplies, setStagedSupplies] = useState<StagedSupplyItem[]>([]);
 
-  // UI & handoff states
+  // UI states
   const [activeReviewTab, setActiveReviewTab] = useState<
     "all" | "drinks" | "modifiers" | "retail" | "supplies"
   >("all");
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
-  const [handoffSuccess, setHandoffSuccess] = useState<boolean>(false);
 
   // Hidden native file input refs
   const licenseInputRef = useRef<HTMLInputElement>(null);
   const menuInputRef = useRef<HTMLInputElement>(null);
   const invoiceInputRef = useRef<HTMLInputElement>(null);
+
+  // Read current values from uncontrolled DOM inputs into storeProfileRef
+  const readStoreProfileFromDom = useCallback((): StoreProfileData => {
+    const legalName =
+      legalNameRef.current?.value.trim() ?? storeProfileRef.current.legalName;
+    const dbaName =
+      dbaNameRef.current?.value.trim() ?? storeProfileRef.current.dbaName;
+    const rawSlug =
+      slugRef.current?.value.trim() ?? storeProfileRef.current.merchantSlug;
+    const merchantSlug = toSlug(rawSlug || dbaName || legalName);
+    const streetAddress =
+      addressRef.current?.value.trim() ?? storeProfileRef.current.streetAddress;
+    const city = cityRef.current?.value.trim() ?? storeProfileRef.current.city;
+    const state = stateRef.current?.value.trim() ?? storeProfileRef.current.state;
+    const zipCode = zipRef.current?.value.trim() ?? storeProfileRef.current.zipCode;
+
+    const snapshot: StoreProfileData = {
+      legalName,
+      dbaName,
+      merchantSlug,
+      streetAddress,
+      city,
+      state,
+      zipCode,
+    };
+    storeProfileRef.current = snapshot;
+    return snapshot;
+  }, []);
+
+  // Write values into uncontrolled DOM inputs (used on mount hydration, OCR completion, or Reset)
+  const writeStoreProfileToInputs = useCallback((profile: StoreProfileData) => {
+    storeProfileRef.current = { ...profile };
+    if (legalNameRef.current) legalNameRef.current.value = profile.legalName || "";
+    if (dbaNameRef.current) dbaNameRef.current.value = profile.dbaName || "";
+    if (slugRef.current) slugRef.current.value = profile.merchantSlug || "";
+    if (addressRef.current) addressRef.current.value = profile.streetAddress || "";
+    if (cityRef.current) cityRef.current.value = profile.city || "";
+    if (stateRef.current) stateRef.current.value = profile.state || "";
+    if (zipRef.current) zipRef.current.value = profile.zipCode || "";
+    setActiveSlugBadge(profile.merchantSlug || "");
+  }, []);
+
+  // Build and persist canonical IntakeStageData to localStorage
+  const persistStageToStorage = useCallback(
+    (overrides?: {
+      profile?: StoreProfileData;
+      drinks?: StagedMenuItem[];
+      modifiers?: StagedModifierOption[];
+      retail?: StagedRetailItem[];
+      supplies?: StagedSupplyItem[];
+      licFiles?: UploadedAsset[];
+      menFiles?: UploadedAsset[];
+      invFiles?: UploadedAsset[];
+      licDetected?: boolean;
+    }) => {
+      if (typeof window === "undefined") return;
+
+      const profile = overrides?.profile ?? readStoreProfileFromDom();
+      const drinks = overrides?.drinks ?? stagedMenuItems;
+      const modifiers = overrides?.modifiers ?? stagedModifiers;
+      const retail = overrides?.retail ?? stagedRetailItems;
+      const supplies = overrides?.supplies ?? stagedSupplies;
+      const licFiles = overrides?.licFiles ?? licenseFiles;
+      const menFiles = overrides?.menFiles ?? menuFiles;
+      const invFiles = overrides?.invFiles ?? invoiceFiles;
+      const licDetected = overrides?.licDetected ?? licenseDetected;
+
+      const activeDrinksCount = drinks.filter((d) => d.included).length;
+      const activeModifiersCount = modifiers.filter((m) => m.included).length;
+      const activeRetailCount = retail.filter((r) => r.included).length;
+      const excludedSuppliesCount = supplies.filter((s) => !s.included).length;
+
+      const stagePayload: IntakeStageData = {
+        storeProfile: profile,
+        stagedCounts: {
+          drinksCount: activeDrinksCount,
+          modifiersCount: activeModifiersCount,
+          retailCount: activeRetailCount,
+          suppliesCount: excludedSuppliesCount,
+        },
+        stagedItems: drinks,
+        modifiers,
+        retailItems: retail,
+        supplies,
+        uploadedFileNames: {
+          license: licFiles.map((f) => f.fileName),
+          menus: menFiles.map((f) => f.fileName),
+          invoices: invFiles.map((f) => f.fileName),
+        },
+        licenseDetected: licDetected,
+        stagedAt: new Date().toISOString(),
+      };
+
+      try {
+        const serialized = JSON.stringify(stagePayload);
+        localStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serialized);
+        sessionStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serialized);
+      } catch {
+        // Ignore storage quota errors
+      }
+    },
+    [
+      readStoreProfileFromDom,
+      stagedMenuItems,
+      stagedModifiers,
+      stagedRetailItems,
+      stagedSupplies,
+      licenseFiles,
+      menuFiles,
+      invoiceFiles,
+      licenseDetected,
+    ]
+  );
+
+  // Hydrate from localStorage on mount so HMR reloads, Wi-Fi reconnects, and Step 2 back-navigation preserve all state
+  useEffect(() => {
+    try {
+      const raw =
+        localStorage.getItem(INTAKE_STAGE_STORAGE_KEY) ||
+        sessionStorage.getItem(INTAKE_STAGE_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<IntakeStageData>;
+
+        if (parsed.storeProfile) {
+          const hydratedProfile: StoreProfileData = {
+            legalName: parsed.storeProfile.legalName || "",
+            dbaName: parsed.storeProfile.dbaName || "",
+            merchantSlug:
+              parsed.storeProfile.merchantSlug ||
+              toSlug(
+                parsed.storeProfile.dbaName || parsed.storeProfile.legalName || ""
+              ),
+            streetAddress: parsed.storeProfile.streetAddress || "",
+            city: parsed.storeProfile.city || "",
+            state: parsed.storeProfile.state || "",
+            zipCode: parsed.storeProfile.zipCode || "",
+          };
+          writeStoreProfileToInputs(hydratedProfile);
+          if (hydratedProfile.merchantSlug) {
+            slugManuallyEditedRef.current = true;
+          }
+        }
+
+        if (typeof parsed.licenseDetected === "boolean") {
+          setLicenseDetected(parsed.licenseDetected);
+        }
+
+        if (Array.isArray(parsed.stagedItems)) {
+          setStagedMenuItems(parsed.stagedItems);
+        }
+        if (Array.isArray(parsed.modifiers)) {
+          setStagedModifiers(parsed.modifiers);
+        }
+        if (Array.isArray(parsed.retailItems)) {
+          setStagedRetailItems(parsed.retailItems);
+        }
+        if (Array.isArray(parsed.supplies)) {
+          setStagedSupplies(parsed.supplies);
+        }
+
+        if (parsed.uploadedFileNames) {
+          const licNames = Array.isArray(parsed.uploadedFileNames.license)
+            ? parsed.uploadedFileNames.license
+            : [];
+          const menuNames = Array.isArray(parsed.uploadedFileNames.menus)
+            ? parsed.uploadedFileNames.menus
+            : [];
+          const invNames = Array.isArray(parsed.uploadedFileNames.invoices)
+            ? parsed.uploadedFileNames.invoices
+            : [];
+
+          if (licNames.length > 0) {
+            setLicenseFiles(
+              licNames.map((name, idx) => ({
+                id: `lic_hydrated_${idx}_${name}`,
+                zone: "license",
+                fileName: name,
+                fileSize: 0,
+                mimeType: name.toLowerCase().endsWith(".pdf")
+                  ? "application/pdf"
+                  : "image/jpeg",
+                previewUrl: "",
+                status: "ready",
+              }))
+            );
+          }
+
+          if (menuNames.length > 0) {
+            setMenuFiles(
+              menuNames.map((name, idx) => ({
+                id: `menu_hydrated_${idx}_${name}`,
+                zone: "menu",
+                fileName: name,
+                fileSize: 0,
+                mimeType: "image/jpeg",
+                previewUrl: "",
+                status: "ready",
+              }))
+            );
+          }
+
+          if (invNames.length > 0) {
+            setInvoiceFiles(
+              invNames.map((name, idx) => ({
+                id: `inv_hydrated_${idx}_${name}`,
+                zone: "invoice",
+                fileName: name,
+                fileSize: 0,
+                mimeType: name.toLowerCase().endsWith(".pdf")
+                  ? "application/pdf"
+                  : "image/jpeg",
+                previewUrl: "",
+                status: "ready",
+              }))
+            );
+          }
+        }
+      }
+    } catch {
+      // Ignore corrupt storage entries
+    } finally {
+      isHydratedRef.current = true;
+    }
+  }, [writeStoreProfileToInputs]);
+
+  // Automatically sync staged arrays & file badges to localStorage whenever they change after hydration
+  useEffect(() => {
+    if (!isHydratedRef.current) return;
+    persistStageToStorage();
+  }, [
+    stagedMenuItems,
+    stagedModifiers,
+    stagedRetailItems,
+    stagedSupplies,
+    licenseFiles,
+    menuFiles,
+    invoiceFiles,
+    licenseDetected,
+    persistStageToStorage,
+  ]);
+
+  // Sync storeProfile to localStorage on every input change WITHOUT triggering any React state re-render!
+  const handleStoreInputChange = (field: keyof StoreProfileData) => {
+    if (field === "merchantSlug") {
+      slugManuallyEditedRef.current = Boolean(slugRef.current?.value.trim());
+    }
+
+    const legalVal = legalNameRef.current?.value.trim() || "";
+    const dbaVal = dbaNameRef.current?.value.trim() || "";
+
+    if (
+      (field === "dbaName" || field === "legalName") &&
+      !slugManuallyEditedRef.current &&
+      slugRef.current
+    ) {
+      slugRef.current.value = toSlug(dbaVal || legalVal);
+    }
+
+    const currentProfile = readStoreProfileFromDom();
+    persistStageToStorage({ profile: currentProfile });
+  };
+
+  // On blur, normalize slug input formatting and update the top header badge
+  const handleStoreInputBlur = () => {
+    if (slugRef.current) {
+      const rawSlug = slugRef.current.value.trim();
+      const dbaVal = dbaNameRef.current?.value.trim() || "";
+      const legalVal = legalNameRef.current?.value.trim() || "";
+      slugRef.current.value = toSlug(rawSlug || dbaVal || legalVal);
+    }
+    const updated = readStoreProfileFromDom();
+    setActiveSlugBadge(updated.merchantSlug);
+    persistStageToStorage({ profile: updated });
+  };
 
   // Active processing flags per zone for card-level spinner feedback
   const isLicenseAnalyzing = useMemo(
@@ -183,91 +518,152 @@ export default function MultiSourceIntakeStagingPage() {
     [invoiceFiles]
   );
 
-  // Core processor for Dropzone 1: Business License (Single File)
-  const processLicenseFiles = async (files: File[]) => {
-    const file = files[0];
-    if (!file) return;
-
-    const assetId = `lic_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const previewUrl = URL.createObjectURL(file);
-
-    const newAsset: UploadedAsset = {
-      id: assetId,
-      zone: "license",
-      fileName: file.name,
-      fileSize: file.size,
-      mimeType: file.type || "image/jpeg",
-      previewUrl,
-      status: "processing",
-    };
-
-    // Single file for Dropzone 1: replace previous license preview and revoke old URL
-    setLicenseFiles((prev) => {
-      prev.forEach((old) => {
-        if (old.previewUrl.startsWith("blob:")) {
-          URL.revokeObjectURL(old.previewUrl);
-        }
-      });
-      return [newAsset];
+  // Single consolidated Reset Intake handler
+  const handleResetIntake = () => {
+    licenseFiles.forEach((f) => {
+      if (f.previewUrl.startsWith("blob:")) URL.revokeObjectURL(f.previewUrl);
     });
-    setStatusBanner(`Extracting Business Identity from "${file.name}"...`);
+    menuFiles.forEach((f) => {
+      if (f.previewUrl.startsWith("blob:")) URL.revokeObjectURL(f.previewUrl);
+    });
+    invoiceFiles.forEach((f) => {
+      if (f.previewUrl.startsWith("blob:")) URL.revokeObjectURL(f.previewUrl);
+    });
+
+    slugManuallyEditedRef.current = false;
+    writeStoreProfileToInputs({ ...EMPTY_STORE_PROFILE });
+    setLicenseDetected(false);
+
+    setLicenseFiles([]);
+    setMenuFiles([]);
+    setInvoiceFiles([]);
+
+    setStagedMenuItems([]);
+    setStagedRetailItems([]);
+    setStagedModifiers([]);
+    setStagedSupplies([]);
+
+    if (licenseInputRef.current) licenseInputRef.current.value = "";
+    if (menuInputRef.current) menuInputRef.current.value = "";
+    if (invoiceInputRef.current) invoiceInputRef.current.value = "";
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("documentType", "license");
+      localStorage.removeItem(INTAKE_STAGE_STORAGE_KEY);
+      sessionStorage.removeItem(INTAKE_STAGE_STORAGE_KEY);
+    } catch {
+      // Ignore storage access errors
+    }
 
-      const res = await fetch("/api/ocr", {
-        method: "POST",
-        body: formData,
-      });
-      const json = (await res.json()) as LicenseOcrApiResponse;
+    setStatusBanner("Intake reset to a clean blank slate.");
+  };
 
-      if (!res.ok || !json.data) {
-        throw new Error(json.error || "License OCR failed");
+  // Core processor for Dropzone 1: Business License
+  const processLicenseFiles = async (files: File[]) => {
+    if (files.length === 0) return;
+
+    const queuedAssets: Array<{ file: File; asset: UploadedAsset }> = files.map(
+      (file) => {
+        const assetId = `lic_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        let previewUrl = "";
+        try {
+          previewUrl = URL.createObjectURL(file);
+        } catch {
+          previewUrl = "";
+        }
+        return {
+          file,
+          asset: {
+            id: assetId,
+            zone: "license",
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type || "image/jpeg",
+            previewUrl,
+            status: "processing",
+          },
+        };
       }
+    );
 
-      const extracted = json.data;
-      const dba = extracted.dbaName?.trim() || storeIdentity.dbaName;
-      const legal = extracted.legalName?.trim() || storeIdentity.legalName;
+    setLicenseFiles((prev) => [...prev, ...queuedAssets.map((q) => q.asset)]);
 
-      setStoreIdentity({
-        legalName: legal,
-        dbaName: dba,
-        address: extracted.address?.trim() || storeIdentity.address,
-        city: extracted.city?.trim() || storeIdentity.city,
-        state: extracted.state?.trim() || storeIdentity.state,
-        zip: extracted.zip?.trim() || storeIdentity.zip,
-        suggestedSlug:
-          extracted.suggestedSlug?.trim() || toSlug(dba || legal || "konnowac-coffee"),
-        sourceFileId: assetId,
-      });
-      setLicenseDetected(true);
+    for (const { file, asset } of queuedAssets) {
+      setStatusBanner(`Extracting Business Identity from "${file.name}"...`);
 
-      setLicenseFiles((prev) =>
-        prev.map((a) => (a.id === assetId ? { ...a, status: "ready" } : a))
-      );
-      setStatusBanner(`Business identity verified from "${file.name}".`);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to parse license";
-      setLicenseFiles((prev) =>
-        prev.map((a) =>
-          a.id === assetId ? { ...a, status: "error", errorMessage: msg } : a
-        )
-      );
-      setStatusBanner(`License OCR alert: ${msg}`);
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("documentType", "license");
+
+        const res = await fetch("/api/ocr", {
+          method: "POST",
+          body: formData,
+        });
+        const json = (await res.json()) as LicenseOcrApiResponse;
+
+        if (!res.ok || !json.data) {
+          throw new Error(json.error || "License OCR failed");
+        }
+
+        const extracted = json.data;
+        const current = readStoreProfileFromDom();
+        const dba = extracted.dbaName?.trim() || current.dbaName;
+        const legal = extracted.legalName?.trim() || current.legalName;
+        const resolvedSlug =
+          extracted.merchantSlug?.trim() ||
+          extracted.suggestedSlug?.trim() ||
+          toSlug(dba || legal) ||
+          current.merchantSlug;
+
+        const nextProfile: StoreProfileData = {
+          legalName: legal,
+          dbaName: dba,
+          merchantSlug: resolvedSlug,
+          streetAddress:
+            extracted.streetAddress?.trim() ||
+            extracted.address?.trim() ||
+            current.streetAddress,
+          city: extracted.city?.trim() || current.city,
+          state: extracted.state?.trim() || current.state,
+          zipCode:
+            extracted.zipCode?.trim() ||
+            extracted.zip?.trim() ||
+            current.zipCode,
+        };
+
+        writeStoreProfileToInputs(nextProfile);
+        setLicenseDetected(true);
+        persistStageToStorage({ profile: nextProfile, licDetected: true });
+
+        setLicenseFiles((prev) =>
+          prev.map((a) => (a.id === asset.id ? { ...a, status: "ready" } : a))
+        );
+        setStatusBanner(`Business identity verified from "${file.name}".`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Failed to parse license";
+        setLicenseFiles((prev) =>
+          prev.map((a) =>
+            a.id === asset.id ? { ...a, status: "error", errorMessage: msg } : a
+          )
+        );
+        setStatusBanner(`License staged ("${file.name}"). OCR note: ${msg}`);
+      }
     }
   };
 
-  // Core processor for Dropzone 2: Menu & Signage (Multiple Files, Appends without overwriting)
+  // Core processor for Dropzone 2: Menu & Signage
   const processMenuFiles = async (files: File[]) => {
     if (files.length === 0) return;
 
-    // Immediately create instant local object URLs so thumbnails & file counter update synchronously
     const queuedAssets: Array<{ file: File; asset: UploadedAsset }> = files.map(
       (file) => {
         const assetId = `menu_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        const previewUrl = URL.createObjectURL(file);
+        let previewUrl = "";
+        try {
+          previewUrl = URL.createObjectURL(file);
+        } catch {
+          previewUrl = "";
+        }
         return {
           file,
           asset: {
@@ -345,7 +741,6 @@ export default function MultiSourceIntakeStagingPage() {
           });
         });
 
-        // Append & deduplicate menu drinks without overwriting previous uploads
         setStagedMenuItems((prev) => {
           const map = new Map<string, StagedMenuItem>();
           prev.forEach((existing) => {
@@ -372,7 +767,6 @@ export default function MultiSourceIntakeStagingPage() {
           return Array.from(map.values());
         });
 
-        // Stage explicit add-on modifiers if found on menu board
         if (boardModifiers.length > 0) {
           setStagedModifiers((prev) => {
             const modMap = new Map<string, StagedModifierOption>();
@@ -422,20 +816,24 @@ export default function MultiSourceIntakeStagingPage() {
             a.id === asset.id ? { ...a, status: "error", errorMessage: msg } : a
           )
         );
-        setStatusBanner(`Menu OCR alert: ${msg}`);
+        setStatusBanner(`Menu file staged ("${file.name}"). OCR note: ${msg}`);
       }
     }
   };
 
-  // Core processor for Dropzone 3: Vendor Invoices (Multiple Files)
+  // Core processor for Dropzone 3: Vendor Invoices
   const processInvoiceFiles = async (files: File[]) => {
     if (files.length === 0) return;
 
-    // Immediately create instant local object URLs so thumbnails & file counter update synchronously
     const queuedAssets: Array<{ file: File; asset: UploadedAsset }> = files.map(
       (file) => {
         const assetId = `inv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        const previewUrl = URL.createObjectURL(file);
+        let previewUrl = "";
+        try {
+          previewUrl = URL.createObjectURL(file);
+        } catch {
+          previewUrl = "";
+        }
         return {
           file,
           asset: {
@@ -473,7 +871,6 @@ export default function MultiSourceIntakeStagingPage() {
 
         const vendorName = data.vendorName || "Distributor Invoice";
 
-        // 1. Append & deduplicate Retail Products ('retail_item')
         if (Array.isArray(data.retailItems) && data.retailItems.length > 0) {
           setStagedRetailItems((prev) => {
             const map = new Map<string, StagedRetailItem>();
@@ -498,7 +895,6 @@ export default function MultiSourceIntakeStagingPage() {
           });
         }
 
-        // 2. Append & deduplicate Modifier Options ('modifier_option')
         if (Array.isArray(data.modifierOptions) && data.modifierOptions.length > 0) {
           setStagedModifiers((prev) => {
             const map = new Map<string, StagedModifierOption>();
@@ -522,7 +918,6 @@ export default function MultiSourceIntakeStagingPage() {
           });
         }
 
-        // 3. Append & deduplicate Operational Supplies ('operational_supply', excluded by default)
         if (Array.isArray(data.supplies) && data.supplies.length > 0) {
           setStagedSupplies((prev) => {
             const map = new Map<string, StagedSupplyItem>();
@@ -560,34 +955,34 @@ export default function MultiSourceIntakeStagingPage() {
             a.id === asset.id ? { ...a, status: "error", errorMessage: msg } : a
           )
         );
-        setStatusBanner(`Invoice OCR alert: ${msg}`);
+        setStatusBanner(`Invoice file staged ("${file.name}"). OCR note: ${msg}`);
       }
     }
   };
 
-  // Native input onChange handlers
+  // Native input onChange handlers: copy FileList into array BEFORE clearing input value
   const handleLicenseUpload = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (files.length > 0) {
-      void processLicenseFiles(files);
+    const selected = e.target.files ? Array.from(e.target.files) : [];
+    if (selected.length > 0) {
+      void processLicenseFiles(selected);
     }
+    e.target.value = "";
   };
 
   const handleMenuUpload = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (files.length > 0) {
-      void processMenuFiles(files);
+    const selected = e.target.files ? Array.from(e.target.files) : [];
+    if (selected.length > 0) {
+      void processMenuFiles(selected);
     }
+    e.target.value = "";
   };
 
   const handleInvoiceUpload = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (files.length > 0) {
-      void processInvoiceFiles(files);
+    const selected = e.target.files ? Array.from(e.target.files) : [];
+    if (selected.length > 0) {
+      void processInvoiceFiles(selected);
     }
+    e.target.value = "";
   };
 
   // Drag-and-drop handlers for each dropzone card
@@ -599,7 +994,7 @@ export default function MultiSourceIntakeStagingPage() {
   const handleDropZone = (zone: DropzoneKey, e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    const files = Array.from(e.dataTransfer.files || []);
+    const files = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
     if (files.length === 0) return;
 
     if (zone === "license") {
@@ -611,7 +1006,7 @@ export default function MultiSourceIntakeStagingPage() {
     }
   };
 
-  // Card click trigger (opens file picker when clicking anywhere on the card outside interactive children)
+  // Card click trigger
   const handleCardClick = (zone: DropzoneKey, e: MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     if (target.closest("button, label, a, input, select")) {
@@ -662,193 +1057,6 @@ export default function MultiSourceIntakeStagingPage() {
     }
   };
 
-  // Load realistic Konnowac Coffee sample dataset for instant testing/inspection
-  const handleLoadDemoFixtures = () => {
-    setStoreIdentity({
-      legalName: "Konnowac Coffee Roasters LLC",
-      dbaName: "Konnowac Coffee",
-      address: "412 Yakima Valley Hwy",
-      city: "Zillah",
-      state: "WA",
-      zip: "98953",
-      suggestedSlug: "konnowac-coffee",
-    });
-    setLicenseDetected(true);
-
-    setStagedMenuItems([
-      {
-        id: "demo_drink_1",
-        name: "Caramel Macchiato",
-        categoryName: "Espresso Classics",
-        variations: [
-          { size: "12oz", price: 4.75 },
-          { size: "16oz", price: 5.25 },
-          { size: "20oz", price: 5.75 },
-        ],
-        included: true,
-        sourceFileName: "drive-thru-main-board.jpg",
-      },
-      {
-        id: "demo_drink_2",
-        name: "White Chocolate Americano",
-        categoryName: "Espresso Classics",
-        variations: [
-          { size: "12oz", price: 4.25 },
-          { size: "16oz", price: 4.75 },
-          { size: "20oz", price: 5.25 },
-        ],
-        included: true,
-        sourceFileName: "drive-thru-main-board.jpg",
-      },
-      {
-        id: "demo_drink_3",
-        name: "Blue Raspberry Lotus Fusion",
-        categoryName: "Plant Energy Bar",
-        variations: [
-          { size: "16oz", price: 5.5 },
-          { size: "24oz", price: 6.5 },
-          { size: "32oz", price: 7.5 },
-        ],
-        included: true,
-        sourceFileName: "summer-energy-flyer.png",
-      },
-      {
-        id: "demo_drink_4",
-        name: "Spiced Chai Frappe",
-        categoryName: "Big Train Blended",
-        variations: [
-          { size: "16oz", price: 5.75 },
-          { size: "24oz", price: 6.5 },
-        ],
-        included: true,
-        sourceFileName: "summer-energy-flyer.png",
-      },
-    ]);
-
-    setStagedRetailItems([
-      {
-        id: "demo_ret_1",
-        name: "Dillanos One Love Whole Bean (12oz)",
-        unitCostCents: 875,
-        suggestedPriceCents: 1850,
-        sku: "DIL-12-ONELOVE",
-        vendorName: "Dillanos Coffee Roasters",
-        included: true,
-        classification: "retail_item",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-      {
-        id: "demo_ret_2",
-        name: "Dillanos Espresso Blend (5lb Bulk Bag)",
-        unitCostCents: 4200,
-        suggestedPriceCents: 7800,
-        sku: "DIL-5LB-ESP",
-        vendorName: "Dillanos Coffee Roasters",
-        included: true,
-        classification: "retail_item",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-      {
-        id: "demo_ret_3",
-        name: "San Pellegrino Sparkling (500ml RTD)",
-        unitCostCents: 115,
-        suggestedPriceCents: 325,
-        sku: "SP-500-RTD",
-        vendorName: "Dillanos Coffee Roasters",
-        included: true,
-        classification: "retail_item",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-    ]);
-
-    setStagedModifiers([
-      {
-        id: "demo_mod_1",
-        name: "Vanilla Bean Syrup",
-        targetGroup: "Flavor Syrups",
-        unitCostCents: 685,
-        vendorName: "Torani / Dillanos",
-        included: true,
-        classification: "modifier_option",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-      {
-        id: "demo_mod_2",
-        name: "Lavender Syrup",
-        targetGroup: "Flavor Syrups",
-        unitCostCents: 710,
-        vendorName: "Torani / Dillanos",
-        included: true,
-        classification: "modifier_option",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-      {
-        id: "demo_mod_3",
-        name: "Caramel Sauce",
-        targetGroup: "Sauces",
-        unitCostCents: 1890,
-        vendorName: "Ghirardelli / Dillanos",
-        included: true,
-        classification: "modifier_option",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-      {
-        id: "demo_mod_4",
-        name: "Barista Series Oat Milk",
-        targetGroup: "Milk Options",
-        unitCostCents: 395,
-        vendorName: "Pacific Foods",
-        included: true,
-        classification: "modifier_option",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-      {
-        id: "demo_mod_5",
-        name: "Spiced Chai Powder",
-        targetGroup: "Powders & Frappe Bases",
-        unitCostCents: 1650,
-        vendorName: "Big Train",
-        included: true,
-        classification: "modifier_option",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-    ]);
-
-    setStagedSupplies([
-      {
-        id: "demo_sup_1",
-        name: "16oz Double-Wall Hot Cups",
-        packSize: "1000/cs",
-        vendorName: "Dillanos Coffee Roasters",
-        included: false,
-        classification: "operational_supply",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-      {
-        id: "demo_sup_2",
-        name: "24oz Clear PET Cold Cups + Flat Strawless Lids",
-        packSize: "600/cs",
-        vendorName: "Dillanos Coffee Roasters",
-        included: false,
-        classification: "operational_supply",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-      {
-        id: "demo_sup_3",
-        name: "Urnex Cafiza Espresso Machine Cleaner",
-        packSize: "20oz jar",
-        vendorName: "Dillanos Coffee Roasters",
-        included: false,
-        classification: "operational_supply",
-        sourceFileName: "dillanos-invoice-1019.jpg",
-      },
-    ]);
-
-    setStatusBanner(
-      "Loaded Konnowac Coffee sample intake staging fixtures (License + Menu Boards + Dillanos/Torani/Big Train Invoice)."
-    );
-  };
-
   // Toggle inclusion and group reassignment handlers
   const toggleMenuItemIncluded = (id: string) => {
     setStagedMenuItems((prev) =>
@@ -897,30 +1105,18 @@ export default function MultiSourceIntakeStagingPage() {
 
   // Step 1 -> Step 2 Handoff Handler
   const handleContinueToBusinessRules = () => {
-    const payload = {
-      merchant_slug: storeIdentity.suggestedSlug || "konnowac-coffee",
-      storeIdentity,
-      stagedDrinks: stagedMenuItems.filter((d) => d.included),
-      stagedModifiers: stagedModifiers.filter((m) => m.included),
-      stagedRetailItems: stagedRetailItems.filter((r) => r.included),
-      excludedOperationalSupplies: stagedSupplies.filter((s) => !s.included),
-      stagedAt: new Date().toISOString(),
+    const currentProfile = readStoreProfileFromDom();
+    const resolvedSlug =
+      currentProfile.merchantSlug ||
+      toSlug(currentProfile.dbaName || currentProfile.legalName);
+
+    const finalProfile: StoreProfileData = {
+      ...currentProfile,
+      merchantSlug: resolvedSlug,
     };
 
-    try {
-      sessionStorage.setItem("barmaid_onboarding_step1_payload", JSON.stringify(payload));
-      localStorage.setItem(
-        `barmaid_staging_${payload.merchant_slug}`,
-        JSON.stringify(payload)
-      );
-    } catch {
-      // Ignore storage quota errors in restricted environments
-    }
-
-    setHandoffSuccess(true);
-    setStatusBanner(
-      `Staged state locked for tenant "${payload.merchant_slug}" and passed to Step 2: Rules & Sizing.`
-    );
+    persistStageToStorage({ profile: finalProfile });
+    router.push("/onboard/rules");
   };
 
   const renderAssetThumbnail = (asset: UploadedAsset) => {
@@ -928,10 +1124,10 @@ export default function MultiSourceIntakeStagingPage() {
       asset.mimeType === "application/pdf" ||
       asset.fileName.toLowerCase().endsWith(".pdf");
 
-    if (isPdf) {
+    if (isPdf || !asset.previewUrl) {
       return (
         <div className="h-11 w-11 rounded-lg border border-slate-700 shrink-0 bg-slate-900 flex items-center justify-center text-[10px] font-mono font-bold text-amber-400">
-          PDF
+          {isPdf ? "PDF" : "IMG"}
         </div>
       );
     }
@@ -946,7 +1142,7 @@ export default function MultiSourceIntakeStagingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-24">
       {/* Onboarding Wizard Top Header */}
       <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50 px-6 py-4">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
@@ -986,18 +1182,16 @@ export default function MultiSourceIntakeStagingPage() {
 
             <span className="text-slate-600 font-mono">→</span>
 
-            <div
-              className={`flex items-center space-x-2 px-3.5 py-2 rounded-xl border ${
-                handoffSuccess
-                  ? "bg-emerald-950/80 border-emerald-500/60 text-emerald-300"
-                  : "bg-slate-900 border-slate-800 text-slate-400"
-              }`}
+            <button
+              type="button"
+              onClick={handleContinueToBusinessRules}
+              className="flex items-center space-x-2 px-3.5 py-2 rounded-xl border bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700 transition cursor-pointer"
             >
               <span className="h-5 w-5 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center text-[11px] font-mono">
                 2
               </span>
               <span>Step 2: Rules &amp; Sizing</span>
-            </div>
+            </button>
 
             <span className="text-slate-600 font-mono">→</span>
 
@@ -1009,40 +1203,41 @@ export default function MultiSourceIntakeStagingPage() {
             </div>
           </nav>
 
-          {/* Active Tenant Pill */}
-          <div className="flex items-center space-x-2">
+          {/* Active Tenant Pill & Single Consolidated Reset Intake Button */}
+          <div className="flex items-center space-x-3">
             <div className="bg-slate-950 border border-slate-800 rounded-full px-3.5 py-1.5 flex items-center space-x-2">
-              <span className="h-2 w-2 rounded-full bg-amber-400"></span>
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  activeSlugBadge ? "bg-amber-400" : "bg-slate-600"
+                }`}
+              ></span>
               <span className="text-xs text-slate-400">merchant_slug:</span>
               <span className="text-xs font-bold text-amber-400 font-mono">
-                {storeIdentity.suggestedSlug || "konnowac-coffee"}
+                {activeSlugBadge || "unassigned"}
               </span>
             </div>
+
+            <button
+              type="button"
+              onClick={handleResetIntake}
+              className="px-3.5 py-1.5 rounded-xl bg-slate-950 hover:bg-rose-950/50 border border-slate-700 hover:border-rose-500/50 text-slate-300 hover:text-rose-300 text-xs font-semibold transition cursor-pointer"
+            >
+              Reset Intake
+            </button>
           </div>
         </div>
       </header>
 
       {/* Main Content Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 space-y-8">
-        {/* Page Title & Demo Fixture Helper */}
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-white">
-              Multi-Source Intake &amp; Catalog Staging
-            </h1>
-            <p className="text-sm text-slate-400 mt-1">
-              Ingest physical business licenses, walk-up menu boards, and vendor packing slips (Dillanos, Torani, Big Train) to isolate retail SKUs, modifiers, and operational supplies.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleLoadDemoFixtures}
-            className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-amber-400 text-xs font-semibold transition flex items-center space-x-2 cursor-pointer"
-          >
-            <span>⚡</span>
-            <span>Load Sample Konnowac Intake Data</span>
-          </button>
+        {/* Page Title */}
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-white">
+            Multi-Source Intake &amp; Catalog Staging
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Ingest physical business licenses, walk-up menu boards, and vendor packing slips (Dillanos, Torani, Big Train) to isolate retail SKUs, modifiers, and operational supplies.
+          </p>
         </div>
 
         {/* Live Status Banner */}
@@ -1063,7 +1258,6 @@ export default function MultiSourceIntakeStagingPage() {
         )}
 
         {/* Hidden Native File Inputs */}
-        {/* Dropzone 1 (License): accept="image/*,application/pdf", capture="environment", single file */}
         <input
           id="license-upload-input"
           ref={licenseInputRef}
@@ -1073,7 +1267,6 @@ export default function MultiSourceIntakeStagingPage() {
           onChange={handleLicenseUpload}
           className="hidden"
         />
-        {/* Dropzone 2 (Menus): accept="image/*", multiple file selection */}
         <input
           id="menu-upload-input"
           ref={menuInputRef}
@@ -1083,7 +1276,6 @@ export default function MultiSourceIntakeStagingPage() {
           onChange={handleMenuUpload}
           className="hidden"
         />
-        {/* Dropzone 3 (Invoices): accept="image/*,application/pdf", multiple file selection */}
         <input
           id="invoice-upload-input"
           ref={invoiceInputRef}
@@ -1123,7 +1315,6 @@ export default function MultiSourceIntakeStagingPage() {
               </p>
             </div>
 
-            {/* Analyzing Spinner Banner */}
             {isLicenseAnalyzing && (
               <div className="flex items-center space-x-2.5 px-3 py-2 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-300">
                 <span className="h-3.5 w-3.5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0"></span>
@@ -1131,7 +1322,6 @@ export default function MultiSourceIntakeStagingPage() {
               </div>
             )}
 
-            {/* Multi-file Preview Cards */}
             {licenseFiles.length > 0 ? (
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                 {licenseFiles.map((asset) => (
@@ -1153,7 +1343,7 @@ export default function MultiSourceIntakeStagingPage() {
                             {asset.status === "processing"
                               ? "Extracting identity..."
                               : asset.status === "error"
-                              ? asset.errorMessage || "Error"
+                              ? "Staged (Manual Review)"
                               : "Identity Parsed"}
                           </span>
                         </div>
@@ -1178,8 +1368,7 @@ export default function MultiSourceIntakeStagingPage() {
                 htmlFor="license-upload-input"
                 className="block border border-dashed border-slate-800 hover:border-amber-500/40 rounded-xl p-5 text-center text-xs text-slate-500 cursor-pointer transition"
               >
-                Click or tap to snap a photo or select a license file. Defaulting to tenant{" "}
-                <span className="text-amber-400 font-mono">konnowac-coffee</span>.
+                Click or tap to snap a photo or select a business license / permit file.
               </label>
             )}
 
@@ -1223,7 +1412,6 @@ export default function MultiSourceIntakeStagingPage() {
               </p>
             </div>
 
-            {/* Analyzing Spinner Banner */}
             {isMenuAnalyzing && (
               <div className="flex items-center space-x-2.5 px-3 py-2 rounded-xl bg-cyan-950/40 border border-cyan-500/40 text-xs text-cyan-300">
                 <span className="h-3.5 w-3.5 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin shrink-0"></span>
@@ -1231,7 +1419,6 @@ export default function MultiSourceIntakeStagingPage() {
               </div>
             )}
 
-            {/* Multi-file Preview Cards */}
             {menuFiles.length > 0 ? (
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                 {menuFiles.map((asset) => (
@@ -1253,7 +1440,7 @@ export default function MultiSourceIntakeStagingPage() {
                             {asset.status === "processing"
                               ? "Scanning board..."
                               : asset.status === "error"
-                              ? asset.errorMessage || "Error"
+                              ? "Staged (Manual Review)"
                               : "Appended to Menu"}
                           </span>
                         </div>
@@ -1322,7 +1509,6 @@ export default function MultiSourceIntakeStagingPage() {
               </p>
             </div>
 
-            {/* Analyzing Spinner Banner */}
             {isInvoiceAnalyzing && (
               <div className="flex items-center space-x-2.5 px-3 py-2 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-xs text-emerald-300">
                 <span className="h-3.5 w-3.5 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin shrink-0"></span>
@@ -1330,7 +1516,6 @@ export default function MultiSourceIntakeStagingPage() {
               </div>
             )}
 
-            {/* Multi-file Preview Cards */}
             {invoiceFiles.length > 0 ? (
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                 {invoiceFiles.map((asset) => (
@@ -1352,7 +1537,7 @@ export default function MultiSourceIntakeStagingPage() {
                             {asset.status === "processing"
                               ? "Classifying SKUs..."
                               : asset.status === "error"
-                              ? asset.errorMessage || "Error"
+                              ? "Staged (Manual Review)"
                               : "Classified & Staged"}
                           </span>
                         </div>
@@ -1398,7 +1583,7 @@ export default function MultiSourceIntakeStagingPage() {
           </div>
         </section>
 
-        {/* Section 2: Detected Store Info (from License) */}
+        {/* Section 2: Uncontrolled Store Info with Live LocalStorage Sync (Zero Keystroke Re-renders) */}
         <section
           aria-label="Detected Store Identity"
           className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-md space-y-4"
@@ -1416,7 +1601,7 @@ export default function MultiSourceIntakeStagingPage() {
                       : "bg-slate-800 text-slate-400"
                   }`}
                 >
-                  {licenseDetected ? "OCR Verified" : "Default Tenant"}
+                  {licenseDetected ? "OCR Verified" : "Awaiting Intake"}
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -1428,108 +1613,142 @@ export default function MultiSourceIntakeStagingPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
-              <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+              <label
+                htmlFor="store-legal-name"
+                className="block text-[11px] font-mono uppercase text-slate-400 mb-1"
+              >
                 Legal Name
               </label>
               <input
+                id="store-legal-name"
+                ref={legalNameRef}
                 type="text"
-                value={storeIdentity.legalName}
-                onChange={(e) =>
-                  setStoreIdentity((prev) => ({ ...prev, legalName: e.target.value }))
-                }
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                defaultValue=""
+                autoComplete="off"
+                placeholder="Legal business entity"
+                onChange={() => handleStoreInputChange("legalName")}
+                onBlur={handleStoreInputBlur}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+              <label
+                htmlFor="store-dba-name"
+                className="block text-[11px] font-mono uppercase text-slate-400 mb-1"
+              >
                 DBA / Trade Name
               </label>
               <input
+                id="store-dba-name"
+                ref={dbaNameRef}
                 type="text"
-                value={storeIdentity.dbaName}
-                onChange={(e) => {
-                  const dbaName = e.target.value;
-                  setStoreIdentity((prev) => ({
-                    ...prev,
-                    dbaName,
-                    suggestedSlug: toSlug(dbaName || prev.legalName),
-                  }));
-                }}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                defaultValue=""
+                autoComplete="off"
+                placeholder="Shop / trade name"
+                onChange={() => handleStoreInputChange("dbaName")}
+                onBlur={handleStoreInputBlur}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+              <label
+                htmlFor="store-slug"
+                className="block text-[11px] font-mono uppercase text-slate-400 mb-1"
+              >
                 Suggested Slug (merchant_slug)
               </label>
               <input
+                id="store-slug"
+                ref={slugRef}
                 type="text"
-                value={storeIdentity.suggestedSlug}
-                onChange={(e) =>
-                  setStoreIdentity((prev) => ({
-                    ...prev,
-                    suggestedSlug: toSlug(e.target.value),
-                  }))
-                }
-                className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-3 py-2 text-xs font-mono text-amber-400 focus:outline-none focus:border-amber-500"
+                defaultValue=""
+                autoComplete="off"
+                placeholder="merchant-slug"
+                onChange={() => handleStoreInputChange("merchantSlug")}
+                onBlur={handleStoreInputBlur}
+                className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-3 py-2 text-base sm:text-xs font-mono text-amber-400 placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+              <label
+                htmlFor="store-address"
+                className="block text-[11px] font-mono uppercase text-slate-400 mb-1"
+              >
                 Street Address
               </label>
               <input
+                id="store-address"
+                ref={addressRef}
                 type="text"
-                value={storeIdentity.address}
-                onChange={(e) =>
-                  setStoreIdentity((prev) => ({ ...prev, address: e.target.value }))
-                }
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                defaultValue=""
+                autoComplete="off"
+                placeholder="Street address"
+                onChange={() => handleStoreInputChange("streetAddress")}
+                onBlur={handleStoreInputBlur}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+              <label
+                htmlFor="store-city"
+                className="block text-[11px] font-mono uppercase text-slate-400 mb-1"
+              >
                 City
               </label>
               <input
+                id="store-city"
+                ref={cityRef}
                 type="text"
-                value={storeIdentity.city}
-                onChange={(e) =>
-                  setStoreIdentity((prev) => ({ ...prev, city: e.target.value }))
-                }
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                defaultValue=""
+                autoComplete="off"
+                placeholder="City"
+                onChange={() => handleStoreInputChange("city")}
+                onBlur={handleStoreInputBlur}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+              <label
+                htmlFor="store-state"
+                className="block text-[11px] font-mono uppercase text-slate-400 mb-1"
+              >
                 State
               </label>
               <input
+                id="store-state"
+                ref={stateRef}
                 type="text"
-                value={storeIdentity.state}
-                onChange={(e) =>
-                  setStoreIdentity((prev) => ({ ...prev, state: e.target.value }))
-                }
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                defaultValue=""
+                autoComplete="off"
+                placeholder="State"
+                onChange={() => handleStoreInputChange("state")}
+                onBlur={handleStoreInputBlur}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+              <label
+                htmlFor="store-zip"
+                className="block text-[11px] font-mono uppercase text-slate-400 mb-1"
+              >
                 ZIP Code
               </label>
               <input
+                id="store-zip"
+                ref={zipRef}
                 type="text"
-                value={storeIdentity.zip}
-                onChange={(e) =>
-                  setStoreIdentity((prev) => ({ ...prev, zip: e.target.value }))
-                }
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
+                defaultValue=""
+                autoComplete="off"
+                placeholder="ZIP"
+                onChange={() => handleStoreInputChange("zipCode")}
+                onBlur={handleStoreInputBlur}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500 font-mono"
               />
             </div>
           </div>
@@ -1605,12 +1824,12 @@ export default function MultiSourceIntakeStagingPage() {
                   No menu items or invoice SKUs staged yet
                 </p>
                 <p className="text-xs text-slate-500 max-w-md mx-auto">
-                  Upload photos of menu boards or vendor invoices in the dropzones above, or load the sample Konnowac Coffee dataset to inspect the staging table.
+                  Upload photos of menu boards or vendor invoices in the dropzones above to populate the staging table.
                 </p>
               </div>
             )}
 
-          {/* Sub-Table A: Drinks & Categories (from Menu Boards) */}
+          {/* Sub-Table A: Drinks & Categories */}
           {(activeReviewTab === "all" || activeReviewTab === "drinks") &&
             stagedMenuItems.length > 0 && (
               <div className="space-y-3">
@@ -1684,7 +1903,7 @@ export default function MultiSourceIntakeStagingPage() {
               </div>
             )}
 
-          {/* Sub-Table B: Ingested Modifiers (from Invoices & Boards, with Group Reassignment) */}
+          {/* Sub-Table B: Ingested Modifiers */}
           {(activeReviewTab === "all" || activeReviewTab === "modifiers") &&
             stagedModifiers.length > 0 && (
               <div className="space-y-3">
@@ -1773,7 +1992,7 @@ export default function MultiSourceIntakeStagingPage() {
               </div>
             )}
 
-          {/* Sub-Table C: Retail Products (from Invoices) */}
+          {/* Sub-Table C: Retail Products */}
           {(activeReviewTab === "all" || activeReviewTab === "retail") &&
             stagedRetailItems.length > 0 && (
               <div className="space-y-3">
@@ -1846,7 +2065,7 @@ export default function MultiSourceIntakeStagingPage() {
               </div>
             )}
 
-          {/* Sub-Table D: Operational Supplies (Excluded from POS by Default) */}
+          {/* Sub-Table D: Operational Supplies */}
           {(activeReviewTab === "all" || activeReviewTab === "supplies") &&
             stagedSupplies.length > 0 && (
               <div className="space-y-3">
@@ -1916,76 +2135,56 @@ export default function MultiSourceIntakeStagingPage() {
                 </div>
               </div>
             )}
-
-          {/* Footer Action Bar: Continue to Business Rules */}
-          <div className="pt-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-4 text-xs font-mono text-slate-400">
-              <span>
-                Tenant:{" "}
-                <strong className="text-amber-400">
-                  {storeIdentity.suggestedSlug || "konnowac-coffee"}
-                </strong>
-              </span>
-              <span>&middot;</span>
-              <span>
-                Drinks: <strong className="text-white">{summaryCounts.activeDrinks}</strong>
-              </span>
-              <span>&middot;</span>
-              <span>
-                Modifiers:{" "}
-                <strong className="text-amber-400">
-                  {summaryCounts.activeModifiers}
-                </strong>
-              </span>
-              <span>&middot;</span>
-              <span>
-                Retail SKUs:{" "}
-                <strong className="text-emerald-400">
-                  {summaryCounts.activeRetail}
-                </strong>
-              </span>
-              <span>&middot;</span>
-              <span>
-                Filtered Supplies:{" "}
-                <strong className="text-slate-400">
-                  {summaryCounts.excludedSupplies}
-                </strong>
-              </span>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleContinueToBusinessRules}
-              className="px-6 py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
-            >
-              <span>Continue to Business Rules</span>
-              <span>→</span>
-            </button>
-          </div>
-
-          {/* Step 2 Handoff Confirmation Card */}
-          {handoffSuccess && (
-            <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-500/50 flex flex-wrap items-center justify-between gap-4">
-              <div className="space-y-1">
-                <p className="text-xs font-bold text-emerald-300">
-                  ✓ Step 1 Staging Snapshot Committed for{" "}
-                  <span className="font-mono">{storeIdentity.suggestedSlug}</span>
-                </p>
-                <p className="text-xs text-slate-300">
-                  {summaryCounts.totalActivePosObjects} POS catalog objects ({summaryCounts.activeDrinks} drinks,{" "}
-                  {summaryCounts.activeModifiers} modifiers, {summaryCounts.activeRetail} retail items) staged for Step 2: Guided Rule &amp; Sizing Verification.
-                </p>
-              </div>
-              <Link
-                href="/"
-                className="px-4 py-2 rounded-lg bg-emerald-500 text-slate-950 font-bold text-xs hover:bg-emerald-400 transition"
-              >
-                Open Ergonomics Studio →
-              </Link>
-            </div>
-          )}
         </section>
       </main>
+
+      {/* Bottom Sticky Footer Action Bar */}
+      <footer className="fixed bottom-0 inset-x-0 z-40 border-t border-slate-800 bg-slate-900/95 backdrop-blur px-6 py-3.5 shadow-2xl">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4 text-xs font-mono text-slate-400">
+            <span>
+              Tenant:{" "}
+              <strong className="text-amber-400">
+                {activeSlugBadge || "unassigned"}
+              </strong>
+            </span>
+            <span>&middot;</span>
+            <span>
+              Drinks: <strong className="text-white">{summaryCounts.activeDrinks}</strong>
+            </span>
+            <span>&middot;</span>
+            <span>
+              Modifiers:{" "}
+              <strong className="text-amber-400">
+                {summaryCounts.activeModifiers}
+              </strong>
+            </span>
+            <span>&middot;</span>
+            <span>
+              Retail SKUs:{" "}
+              <strong className="text-emerald-400">
+                {summaryCounts.activeRetail}
+              </strong>
+            </span>
+            <span>&middot;</span>
+            <span>
+              Filtered Supplies:{" "}
+              <strong className="text-slate-400">
+                {summaryCounts.excludedSupplies}
+              </strong>
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleContinueToBusinessRules}
+            className="px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
+          >
+            <span>Continue to Business Rules</span>
+            <span>→</span>
+          </button>
+        </div>
+      </footer>
     </div>
   );
 }

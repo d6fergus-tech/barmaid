@@ -1,18 +1,25 @@
 import { NextResponse } from "next/server";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, type Model } from "@google/genai";
+
+interface ModelSummary {
+  name?: string;
+  displayName?: string;
+  supportedActions?: string[];
+}
 
 export async function GET() {
   try {
-    const ai = new GoogleGenAI();
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
     // Fetch the live list of models available to this API key
     const response = await ai.models.list();
-    
-    const modelNames = [];
+
+    const modelNames: ModelSummary[] = [];
     for await (const model of response) {
+      const typedModel: Model = model;
       modelNames.push({
-        name: model.name,
-        displayName: model.displayName,
-        supportedActions: model.supportedGenerationMethods,
+        name: typedModel.name,
+        displayName: typedModel.displayName,
+        supportedActions: typedModel.supportedActions,
       });
     }
 
