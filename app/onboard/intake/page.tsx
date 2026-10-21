@@ -23,6 +23,24 @@ export const INTAKE_STAGE_STORAGE_KEY = "barmaid_intake_stage";
 
 type DropzoneKey = "license" | "menu" | "invoice";
 
+export type ItemClassification =
+  | "food"
+  | "drink"
+  | "modifier_option"
+  | "retail_item"
+  | "operational_supply";
+
+export const CLASSIFICATION_OPTIONS: ReadonlyArray<{
+  value: ItemClassification;
+  label: string;
+}> = [
+  { value: "food", label: "Food & Pastries" },
+  { value: "drink", label: "Drinks & Beverages" },
+  { value: "modifier_option", label: "Modifier Option" },
+  { value: "retail_item", label: "Retail Packaged" },
+  { value: "operational_supply", label: "Operational Supply" },
+];
+
 interface UploadedAsset {
   id: string;
   zone: DropzoneKey;
@@ -68,10 +86,11 @@ export interface StagedMenuItem {
   categoryName: string;
   variations: MenuVariation[];
   included: boolean;
+  classification: "drink" | "food";
   sourceFileName: string;
 }
 
-export interface StagedRetailItem extends InvoiceRetailItem {
+export interface StagedRetailItem extends Omit<InvoiceRetailItem, "classification"> {
   id: string;
   vendorName: string;
   included: boolean;
@@ -79,7 +98,7 @@ export interface StagedRetailItem extends InvoiceRetailItem {
   sourceFileName: string;
 }
 
-export interface StagedModifierOption extends InvoiceModifierOption {
+export interface StagedModifierOption extends Omit<InvoiceModifierOption, "classification"> {
   id: string;
   vendorName: string;
   included: boolean;
@@ -87,7 +106,7 @@ export interface StagedModifierOption extends InvoiceModifierOption {
   sourceFileName: string;
 }
 
-export interface StagedSupplyItem extends InvoiceOperationalSupply {
+export interface StagedSupplyItem extends Omit<InvoiceOperationalSupply, "classification"> {
   id: string;
   vendorName: string;
   included: boolean;
@@ -189,6 +208,33 @@ function formatFileCountBadge(count: number): string {
   return `${count} ${count === 1 ? "File" : "Files"}`;
 }
 
+function inferFoodOrDrink(name: string, categoryName: string): "food" | "drink" {
+  const combined = `${name} ${categoryName}`;
+  if (
+    /muffin|scone|cookie|treat|crispy|bagel|croissant|burrito|sandwich|pastry|food|bakery|snack|cake|brownie|toast|biscotti|waffle/i.test(
+      combined
+    )
+  ) {
+    return "food";
+  }
+  return "drink";
+}
+
+function getClassificationSelectClasses(classification: ItemClassification): string {
+  switch (classification) {
+    case "food":
+      return "bg-slate-950 border-purple-700/70 text-purple-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500";
+    case "drink":
+      return "bg-slate-950 border-cyan-700/70 text-cyan-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500";
+    case "modifier_option":
+      return "bg-slate-950 border-amber-700/70 text-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500";
+    case "retail_item":
+      return "bg-slate-950 border-emerald-700/70 text-emerald-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500";
+    case "operational_supply":
+      return "bg-slate-950 border-slate-700 text-slate-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500";
+  }
+}
+
 export default function MultiSourceIntakeStagingPage() {
   const router = useRouter();
 
@@ -258,7 +304,7 @@ export default function MultiSourceIntakeStagingPage() {
     return snapshot;
   }, []);
 
-  // Write values into uncontrolled DOM inputs (used on mount hydration, OCR completion, or Reset)
+  // Write values into uncontrolled DOM inputs
   const writeStoreProfileToInputs = useCallback((profile: StoreProfileData) => {
     storeProfileRef.current = { ...profile };
     if (legalNameRef.current) legalNameRef.current.value = profile.legalName || "";
@@ -343,7 +389,7 @@ export default function MultiSourceIntakeStagingPage() {
     ]
   );
 
-  // Hydrate from localStorage on mount so HMR reloads, Wi-Fi reconnects, and Step 2 back-navigation preserve all state
+  // Hydrate from localStorage on mount
   useEffect(() => {
     try {
       const raw =
@@ -377,7 +423,15 @@ export default function MultiSourceIntakeStagingPage() {
         }
 
         if (Array.isArray(parsed.stagedItems)) {
-          setStagedMenuItems(parsed.stagedItems);
+          setStagedMenuItems(
+            parsed.stagedItems.map((item) => ({
+              ...item,
+              classification:
+                item.classification === "food" || item.classification === "drink"
+                  ? item.classification
+                  : inferFoodOrDrink(item.name, item.categoryName || ""),
+            }))
+          );
         }
         if (Array.isArray(parsed.modifiers)) {
           setStagedModifiers(parsed.modifiers);
@@ -470,7 +524,7 @@ export default function MultiSourceIntakeStagingPage() {
     persistStageToStorage,
   ]);
 
-  // Sync storeProfile to localStorage on every input change WITHOUT triggering any React state re-render!
+  // Sync storeProfile to localStorage on every input change WITHOUT triggering any React state re-render
   const handleStoreInputChange = (field: keyof StoreProfileData) => {
     if (field === "merchantSlug") {
       slugManuallyEditedRef.current = Boolean(slugRef.current?.value.trim());
@@ -491,7 +545,6 @@ export default function MultiSourceIntakeStagingPage() {
     persistStageToStorage({ profile: currentProfile });
   };
 
-  // On blur, normalize slug input formatting and update the top header badge
   const handleStoreInputBlur = () => {
     if (slugRef.current) {
       const rawSlug = slugRef.current.value.trim();
@@ -502,6 +555,194 @@ export default function MultiSourceIntakeStagingPage() {
     const updated = readStoreProfileFromDom();
     setActiveSlugBadge(updated.merchantSlug);
     persistStageToStorage({ profile: updated });
+  };
+
+  /**
+   * Unified Classification Override Handler:
+   * Immediately updates the item's classification, moves it to the target bucket
+   * (stagedMenuItems for 'food' | 'drink', stagedModifiers for 'modifier_option',
+   * stagedRetailItems for 'retail_item', stagedSupplies for 'operational_supply'),
+   * recalculates tab/footer counts, and persists to localStorage ('barmaid_intake_stage').
+   */
+  const handleReclassifyItem = (
+    currentTable: "drinks" | "modifiers" | "retail" | "supplies",
+    itemId: string,
+    nextClassification: ItemClassification
+  ) => {
+    let nextDrinks = [...stagedMenuItems];
+    let nextModifiers = [...stagedModifiers];
+    let nextRetail = [...stagedRetailItems];
+    let nextSupplies = [...stagedSupplies];
+
+    // Extract source item metadata before moving/updating
+    let itemName = "";
+    let sourceFileName = "manual-override";
+    let basePriceDollars = 4.5;
+    let unitCostCents: number | undefined;
+    let suggestedPriceCents: number | undefined;
+    let sku: string | undefined;
+    let vendorName = "Staged Override";
+    let currentCategoryName = "";
+    let currentVariations: MenuVariation[] = [];
+    let currentIncluded = true;
+
+    if (currentTable === "drinks") {
+      const found = nextDrinks.find((d) => d.id === itemId);
+      if (!found) return;
+      if (nextClassification === "drink" || nextClassification === "food") {
+        // Stay in stagedMenuItems, update classification & categoryName if switched
+        nextDrinks = nextDrinks.map((d) =>
+          d.id === itemId
+            ? {
+                ...d,
+                classification: nextClassification,
+                categoryName:
+                  nextClassification === "food" &&
+                  !/food|pastry|bakery|snack/i.test(d.categoryName)
+                    ? "Food & Pastries"
+                    : nextClassification === "drink" &&
+                      d.categoryName === "Food & Pastries"
+                    ? "Drinks & Beverages"
+                    : d.categoryName,
+              }
+            : d
+        );
+        setStagedMenuItems(nextDrinks);
+        persistStageToStorage({ drinks: nextDrinks });
+        return;
+      }
+      itemName = found.name;
+      sourceFileName = found.sourceFileName;
+      basePriceDollars = found.variations[0]?.price ?? 4.5;
+      suggestedPriceCents = Math.round(basePriceDollars * 100);
+      currentCategoryName = found.categoryName;
+      currentVariations = found.variations;
+      currentIncluded = found.included;
+      nextDrinks = nextDrinks.filter((d) => d.id !== itemId);
+    } else if (currentTable === "modifiers") {
+      const found = nextModifiers.find((m) => m.id === itemId);
+      if (!found || nextClassification === "modifier_option") return;
+      itemName = found.name;
+      sourceFileName = found.sourceFileName;
+      unitCostCents = found.unitCostCents;
+      basePriceDollars =
+        typeof found.unitCostCents === "number" && found.unitCostCents > 0
+          ? Number((found.unitCostCents / 100).toFixed(2))
+          : 0.75;
+      vendorName = found.vendorName;
+      currentIncluded = found.included;
+      nextModifiers = nextModifiers.filter((m) => m.id !== itemId);
+    } else if (currentTable === "retail") {
+      const found = nextRetail.find((r) => r.id === itemId);
+      if (!found || nextClassification === "retail_item") return;
+      itemName = found.name;
+      sourceFileName = found.sourceFileName;
+      unitCostCents = found.unitCostCents;
+      suggestedPriceCents = found.suggestedPriceCents;
+      sku = found.sku;
+      vendorName = found.vendorName;
+      currentIncluded = found.included;
+      basePriceDollars =
+        typeof found.suggestedPriceCents === "number" && found.suggestedPriceCents > 0
+          ? Number((found.suggestedPriceCents / 100).toFixed(2))
+          : typeof found.unitCostCents === "number" && found.unitCostCents > 0
+          ? Number(((found.unitCostCents * 2) / 100).toFixed(2))
+          : 4.25;
+      nextRetail = nextRetail.filter((r) => r.id !== itemId);
+    } else if (currentTable === "supplies") {
+      const found = nextSupplies.find((s) => s.id === itemId);
+      if (!found || nextClassification === "operational_supply") return;
+      itemName = found.name;
+      sourceFileName = found.sourceFileName;
+      vendorName = found.vendorName;
+      currentIncluded = true; // Enabling on POS when moved out of operational supplies
+      basePriceDollars = 4.0;
+      nextSupplies = nextSupplies.filter((s) => s.id !== itemId);
+    }
+
+    // Insert into the newly selected classification target array
+    if (nextClassification === "food" || nextClassification === "drink") {
+      const resolvedCategory =
+        nextClassification === "food"
+          ? "Food & Pastries"
+          : currentCategoryName || "Drinks & Beverages";
+      const resolvedVariations: MenuVariation[] =
+        currentVariations.length > 0
+          ? currentVariations
+          : [
+              {
+                size: nextClassification === "food" ? "Regular" : "16oz",
+                price: basePriceDollars,
+              },
+            ];
+      nextDrinks.push({
+        id: itemId,
+        name: itemName,
+        categoryName: resolvedCategory,
+        variations: resolvedVariations,
+        included: currentIncluded,
+        classification: nextClassification,
+        sourceFileName,
+      });
+    } else if (nextClassification === "modifier_option") {
+      const inferredGroup = /oat|almond|coconut|soy|breve|milk|cream/i.test(itemName)
+        ? "Milk Options"
+        : /sauce|mocha|caramel|white choc/i.test(itemName)
+        ? "Sauces"
+        : /lotus|red bull|shot|espresso|boba/i.test(itemName)
+        ? "Energy & Boosters"
+        : "Flavor Syrups";
+
+      nextModifiers.push({
+        id: itemId,
+        name: itemName,
+        targetGroup: inferredGroup,
+        unitCostCents,
+        vendorName,
+        included: currentIncluded,
+        classification: "modifier_option",
+        sourceFileName,
+      });
+    } else if (nextClassification === "retail_item") {
+      nextRetail.push({
+        id: itemId,
+        name: itemName,
+        unitCostCents,
+        suggestedPriceCents:
+          suggestedPriceCents ?? Math.round(basePriceDollars * 100),
+        sku,
+        vendorName,
+        included: currentIncluded,
+        classification: "retail_item",
+        sourceFileName,
+      });
+    } else if (nextClassification === "operational_supply") {
+      nextSupplies.push({
+        id: itemId,
+        name: itemName,
+        vendorName,
+        included: false,
+        classification: "operational_supply",
+        sourceFileName,
+      });
+    }
+
+    setStagedMenuItems(nextDrinks);
+    setStagedModifiers(nextModifiers);
+    setStagedRetailItems(nextRetail);
+    setStagedSupplies(nextSupplies);
+
+    persistStageToStorage({
+      drinks: nextDrinks,
+      modifiers: nextModifiers,
+      retail: nextRetail,
+      supplies: nextSupplies,
+    });
+
+    const labelMatch =
+      CLASSIFICATION_OPTIONS.find((o) => o.value === nextClassification)?.label ||
+      nextClassification;
+    setStatusBanner(`Reclassified "${itemName}" as ${labelMatch}.`);
   };
 
   // Active processing flags per zone for card-level spinner feedback
@@ -736,6 +977,7 @@ export default function MultiSourceIntakeStagingPage() {
               categoryName,
               variations: validVars.length > 0 ? validVars : fallbackVars,
               included: true,
+              classification: inferFoodOrDrink(rawName, categoryName),
               sourceFileName: file.name,
             });
           });
@@ -960,7 +1202,7 @@ export default function MultiSourceIntakeStagingPage() {
     }
   };
 
-  // Native input onChange handlers: copy FileList into array BEFORE clearing input value
+  // Native input onChange handlers
   const handleLicenseUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files ? Array.from(e.target.files) : [];
     if (selected.length > 0) {
@@ -985,7 +1227,7 @@ export default function MultiSourceIntakeStagingPage() {
     e.target.value = "";
   };
 
-  // Drag-and-drop handlers for each dropzone card
+  // Drag-and-drop handlers
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1088,7 +1330,7 @@ export default function MultiSourceIntakeStagingPage() {
     );
   };
 
-  // Summary counts
+  // Dynamic summary counts
   const summaryCounts = useMemo(() => {
     const activeDrinks = stagedMenuItems.filter((i) => i.included).length;
     const activeModifiers = stagedModifiers.filter((m) => m.included).length;
@@ -1583,7 +1825,7 @@ export default function MultiSourceIntakeStagingPage() {
           </div>
         </section>
 
-        {/* Section 2: Uncontrolled Store Info with Live LocalStorage Sync (Zero Keystroke Re-renders) */}
+        {/* Section 2: Uncontrolled Store Info with Live LocalStorage Sync */}
         <section
           aria-label="Detected Store Identity"
           className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-md space-y-4"
@@ -1765,11 +2007,11 @@ export default function MultiSourceIntakeStagingPage() {
                 Interactive Staging Review Table
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Aggregated, deduplicated preview across Menu Boards and Vendor Invoices. Toggle checkboxes to include/exclude items or reassign modifier groups before Step 2.
+                Aggregated, deduplicated preview across Menu Boards and Vendor Invoices. Override item classifications or modifier groups with live category count recalculation.
               </p>
             </div>
 
-            {/* Filter Tabs */}
+            {/* Dynamic Filter Tabs */}
             <div className="flex flex-wrap items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
               {[
                 {
@@ -1783,7 +2025,7 @@ export default function MultiSourceIntakeStagingPage() {
                 },
                 {
                   id: "drinks" as const,
-                  label: `Drinks & Categories (${stagedMenuItems.length})`,
+                  label: `Drinks & Food (${stagedMenuItems.length})`,
                 },
                 {
                   id: "modifiers" as const,
@@ -1829,13 +2071,13 @@ export default function MultiSourceIntakeStagingPage() {
               </div>
             )}
 
-          {/* Sub-Table A: Drinks & Categories */}
+          {/* Sub-Table A: Drinks & Food */}
           {(activeReviewTab === "all" || activeReviewTab === "drinks") &&
             stagedMenuItems.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-mono uppercase tracking-wider text-cyan-400">
-                    Drinks &amp; Categories (Menu Board Extractions)
+                    Drinks &amp; Food (Menu &amp; Reclassified Items)
                   </h3>
                   <span className="text-xs font-mono text-slate-400">
                     {summaryCounts.activeDrinks} / {stagedMenuItems.length} Included
@@ -1847,7 +2089,8 @@ export default function MultiSourceIntakeStagingPage() {
                     <thead>
                       <tr className="bg-slate-950/90 text-slate-400 font-mono uppercase text-[11px] border-b border-slate-800">
                         <th className="py-2.5 px-3 w-12">POS</th>
-                        <th className="py-2.5 px-3">Drink Name</th>
+                        <th className="py-2.5 px-3">Item Name</th>
+                        <th className="py-2.5 px-3">Classification</th>
                         <th className="py-2.5 px-3">Category</th>
                         <th className="py-2.5 px-3">Sizes &amp; Board Pricing</th>
                         <th className="py-2.5 px-3">Source</th>
@@ -1874,6 +2117,28 @@ export default function MultiSourceIntakeStagingPage() {
                           </td>
                           <td className="py-2.5 px-3 font-semibold text-white">
                             {drink.name}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <select
+                              value={drink.classification || "drink"}
+                              onChange={(e) =>
+                                handleReclassifyItem(
+                                  "drinks",
+                                  drink.id,
+                                  e.target.value as ItemClassification
+                                )
+                              }
+                              aria-label={`Classification for ${drink.name}`}
+                              className={`rounded-lg border px-2.5 py-1 text-base sm:text-xs font-mono font-medium transition cursor-pointer focus:outline-none ${getClassificationSelectClasses(
+                                drink.classification || "drink"
+                              )}`}
+                            >
+                              {CLASSIFICATION_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="py-2.5 px-3">
                             <span className="px-2 py-0.5 rounded bg-cyan-950/70 border border-cyan-800/50 text-cyan-300 font-mono text-[11px]">
@@ -1951,9 +2216,26 @@ export default function MultiSourceIntakeStagingPage() {
                             {mod.name}
                           </td>
                           <td className="py-2.5 px-3">
-                            <span className="px-2 py-0.5 rounded bg-amber-950/70 border border-amber-800/50 text-amber-300 font-mono text-[11px]">
-                              {mod.classification}
-                            </span>
+                            <select
+                              value={mod.classification}
+                              onChange={(e) =>
+                                handleReclassifyItem(
+                                  "modifiers",
+                                  mod.id,
+                                  e.target.value as ItemClassification
+                                )
+                              }
+                              aria-label={`Classification for ${mod.name}`}
+                              className={`rounded-lg border px-2.5 py-1 text-base sm:text-xs font-mono font-medium transition cursor-pointer focus:outline-none ${getClassificationSelectClasses(
+                                mod.classification
+                              )}`}
+                            >
+                              {CLASSIFICATION_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="py-2.5 px-3">
                             <select
@@ -1962,7 +2244,7 @@ export default function MultiSourceIntakeStagingPage() {
                                 updateModifierTargetGroup(mod.id, e.target.value)
                               }
                               aria-label={`Modifier group for ${mod.name}`}
-                              className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-amber-300 font-medium focus:outline-none focus:border-amber-500"
+                              className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-base sm:text-xs text-amber-300 font-medium focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 cursor-pointer"
                             >
                               {MODIFIER_GROUPS.map((groupName) => (
                                 <option key={groupName} value={groupName}>
@@ -2041,9 +2323,26 @@ export default function MultiSourceIntakeStagingPage() {
                             {item.name}
                           </td>
                           <td className="py-2.5 px-3">
-                            <span className="px-2 py-0.5 rounded bg-emerald-950/70 border border-emerald-800/50 text-emerald-300 font-mono text-[11px]">
-                              {item.classification}
-                            </span>
+                            <select
+                              value={item.classification}
+                              onChange={(e) =>
+                                handleReclassifyItem(
+                                  "retail",
+                                  item.id,
+                                  e.target.value as ItemClassification
+                                )
+                              }
+                              aria-label={`Classification for ${item.name}`}
+                              className={`rounded-lg border px-2.5 py-1 text-base sm:text-xs font-mono font-medium transition cursor-pointer focus:outline-none ${getClassificationSelectClasses(
+                                item.classification
+                              )}`}
+                            >
+                              {CLASSIFICATION_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="py-2.5 px-3 font-mono text-slate-400">
                             {item.sku || "—"}
@@ -2112,9 +2411,26 @@ export default function MultiSourceIntakeStagingPage() {
                             {sup.name}
                           </td>
                           <td className="py-2.5 px-3">
-                            <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400 font-mono text-[11px]">
-                              {sup.classification}
-                            </span>
+                            <select
+                              value={sup.classification}
+                              onChange={(e) =>
+                                handleReclassifyItem(
+                                  "supplies",
+                                  sup.id,
+                                  e.target.value as ItemClassification
+                                )
+                              }
+                              aria-label={`Classification for ${sup.name}`}
+                              className={`rounded-lg border px-2.5 py-1 text-base sm:text-xs font-mono font-medium transition cursor-pointer focus:outline-none ${getClassificationSelectClasses(
+                                sup.classification
+                              )}`}
+                            >
+                              {CLASSIFICATION_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="py-2.5 px-3 font-mono text-slate-400">
                             {sup.packSize || "—"}
@@ -2150,7 +2466,8 @@ export default function MultiSourceIntakeStagingPage() {
             </span>
             <span>&middot;</span>
             <span>
-              Drinks: <strong className="text-white">{summaryCounts.activeDrinks}</strong>
+              Drinks &amp; Food:{" "}
+              <strong className="text-white">{summaryCounts.activeDrinks}</strong>
             </span>
             <span>&middot;</span>
             <span>
