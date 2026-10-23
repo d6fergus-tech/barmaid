@@ -189,6 +189,7 @@ interface MenuOcrApiResponse {
   success?: boolean;
   error?: string;
   data?: {
+    detectedStoreName?: string | null;
     categories?: Array<{
       categoryName?: string;
       items?: Array<{
@@ -211,8 +212,11 @@ interface LicenseOcrApiResponse {
   success?: boolean;
   error?: string;
   data?: {
+    legalEntityName?: string;
     legalName?: string;
+    tradeName?: string;
     dbaName?: string;
+    hasExplicitTradeName?: boolean;
     address?: string;
     streetAddress?: string;
     city?: string;
@@ -1444,17 +1448,70 @@ export default function MultiSourceIntakeStagingPage() {
 
         const extracted = json.data;
         const current = readStoreProfileFromDom();
-        const dba = extracted.dbaName?.trim() || current.dbaName;
-        const legal = extracted.legalName?.trim() || current.legalName;
+
+        const extractedLegal = (
+          extracted.legalEntityName ||
+          extracted.legalName ||
+          ""
+        ).trim();
+        const extractedTrade = (
+          extracted.tradeName ||
+          extracted.dbaName ||
+          ""
+        ).trim();
+
+        // Populate storeProfile.legalName with the official entity from the license
+        const reconciledLegal = extractedLegal || current.legalName;
+
+        // Reconcile DBA / Trade Name:
+        // If storeProfile.dbaName was already populated from a menu board, retain it
+        // unless the license explicitly defines a conflicting trade name.
+        const currentDba = current.dbaName.trim();
+        const hasExistingDba =
+          Boolean(currentDba) && currentDba.toLowerCase() !== "unassigned";
+
+        const isDistinctTradeNameFromLegal =
+          Boolean(extractedTrade) &&
+          extractedTrade.toLowerCase() !== "unassigned" &&
+          normalizeKey(extractedTrade) !== normalizeKey(extractedLegal);
+        const hasExplicitLicenseTradeName =
+          Boolean(extractedTrade) &&
+          extractedTrade.toLowerCase() !== "unassigned" &&
+          (extracted.hasExplicitTradeName === true ||
+            isDistinctTradeNameFromLegal);
+
+        let reconciledDba = currentDba;
+        if (hasExistingDba) {
+          if (
+            hasExplicitLicenseTradeName &&
+            normalizeKey(extractedTrade) !== normalizeKey(currentDba)
+          ) {
+            reconciledDba = extractedTrade;
+          }
+        } else if (hasExplicitLicenseTradeName) {
+          reconciledDba = extractedTrade;
+        } else if (
+          extractedTrade &&
+          extractedTrade.toLowerCase() !== "unassigned"
+        ) {
+          reconciledDba = extractedTrade;
+        }
+
+        const currentSlug = current.merchantSlug.trim();
+        const preferredSlugSource = reconciledDba || reconciledLegal;
         const resolvedSlug =
+          (slugManuallyEditedRef.current &&
+          currentSlug &&
+          currentSlug.toLowerCase() !== "unassigned"
+            ? currentSlug
+            : toSlug(preferredSlugSource)) ||
           extracted.merchantSlug?.trim() ||
           extracted.suggestedSlug?.trim() ||
-          toSlug(dba || legal) ||
-          current.merchantSlug;
+          currentSlug;
 
         const nextProfile: StoreProfileData = {
-          legalName: legal,
-          dbaName: dba,
+          legalName: reconciledLegal,
+          dbaName: reconciledDba,
           merchantSlug: resolvedSlug,
           streetAddress:
             extracted.streetAddress?.trim() ||
@@ -1475,7 +1532,11 @@ export default function MultiSourceIntakeStagingPage() {
         setLicenseFiles((prev) =>
           prev.map((a) => (a.id === asset.id ? { ...a, status: "ready" } : a))
         );
-        setStatusBanner(`Business identity verified from "${file.name}".`);
+        setStatusBanner(
+          `Business identity reconciled from "${file.name}" (Legal: ${
+            reconciledLegal || "—"
+          }, DBA: ${reconciledDba || "—"}).`
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Failed to parse license";
         setLicenseFiles((prev) =>
@@ -1533,6 +1594,39 @@ export default function MultiSourceIntakeStagingPage() {
 
         if (!res.ok || !json.data) {
           throw new Error(json.error || "Menu OCR failed");
+        }
+
+        // Signboard & Menu Header Merchant Detection:
+        // If storeProfile.dbaName is empty or 'unassigned', automatically populate dbaName with detectedStoreName
+        // and auto-derive merchantSlug (leaving legalName blank until confirmed).
+        const detectedStoreName =
+          typeof json.data.detectedStoreName === "string"
+            ? json.data.detectedStoreName.trim()
+            : "";
+        const currentProfile = readStoreProfileFromDom();
+        let nextProfile = currentProfile;
+
+        if (
+          detectedStoreName &&
+          detectedStoreName.toLowerCase() !== "unassigned"
+        ) {
+          const currentDba = currentProfile.dbaName.trim();
+          if (!currentDba || currentDba.toLowerCase() === "unassigned") {
+            const derivedSlug = toSlug(detectedStoreName);
+            const currentSlug = currentProfile.merchantSlug.trim();
+            const shouldAutoSetSlug =
+              !slugManuallyEditedRef.current ||
+              !currentSlug ||
+              currentSlug.toLowerCase() === "unassigned";
+
+            nextProfile = {
+              ...currentProfile,
+              dbaName: detectedStoreName,
+              merchantSlug: shouldAutoSetSlug ? derivedSlug : currentSlug,
+              legalName: currentProfile.legalName,
+            };
+            writeStoreProfileToInputs(nextProfile);
+          }
         }
 
         const categories = json.data.categories || [];
@@ -1641,11 +1735,16 @@ export default function MultiSourceIntakeStagingPage() {
           });
         }
 
+        // Immediately sync reconciled storeProfile (DBA & merchant_slug) to localStorage
+        persistStageToStorage({ profile: nextProfile });
+
         setMenuFiles((prev) =>
           prev.map((a) => (a.id === asset.id ? { ...a, status: "ready" } : a))
         );
         setStatusBanner(
-          `Appended ${extractedDrinks.length} menu items from "${file.name}" into staging.`
+          detectedStoreName
+            ? `Appended ${extractedDrinks.length} menu items from "${file.name}" (Detected Storefront: ${detectedStoreName} → ${nextProfile.merchantSlug}).`
+            : `Appended ${extractedDrinks.length} menu items from "${file.name}" into staging.`
         );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Failed to parse menu board";
@@ -2470,7 +2569,7 @@ export default function MultiSourceIntakeStagingPage() {
                 htmlFor="store-legal-name"
                 className="block text-[11px] font-mono uppercase text-slate-400 mb-1"
               >
-                Legal Name
+                Legal Entity Name
               </label>
               <input
                 id="store-legal-name"
@@ -2478,11 +2577,14 @@ export default function MultiSourceIntakeStagingPage() {
                 type="text"
                 defaultValue=""
                 autoComplete="off"
-                placeholder="Legal business entity"
+                placeholder="Official license / LLC registration"
                 onChange={() => handleStoreInputChange("legalName")}
                 onBlur={handleStoreInputBlur}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
+              <span className="block text-[10px] text-slate-500 mt-1">
+                Official license / LLC registration
+              </span>
             </div>
 
             <div>
@@ -2498,11 +2600,14 @@ export default function MultiSourceIntakeStagingPage() {
                 type="text"
                 defaultValue=""
                 autoComplete="off"
-                placeholder="Shop / trade name"
+                placeholder="Storefront / menu board identity"
                 onChange={() => handleStoreInputChange("dbaName")}
                 onBlur={handleStoreInputBlur}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
+              <span className="block text-[10px] text-slate-500 mt-1">
+                Storefront / menu board identity
+              </span>
             </div>
 
             <div>
@@ -2523,6 +2628,9 @@ export default function MultiSourceIntakeStagingPage() {
                 onBlur={handleStoreInputBlur}
                 className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-3 py-2 text-base sm:text-xs font-mono text-amber-400 placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
+              <span className="block text-[10px] text-slate-500 mt-1">
+                Kebab-case tenant key derived from DBA
+              </span>
             </div>
 
             <div>
