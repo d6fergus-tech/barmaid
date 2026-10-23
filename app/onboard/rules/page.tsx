@@ -75,121 +75,6 @@ const DEFAULT_MODIFIER_PRICING: ModifierPricingRules = {
   syrupSauceAddOnDollars: 0.5,
 };
 
-const FALLBACK_PREVIEW_ITEMS: PreviewCatalogItem[] = [
-  {
-    id: "fb_1",
-    name: "Caramel Macchiato",
-    category: "Hot Espresso",
-    basePrice: 4.95,
-    variations: [
-      { size: "12oz", price: 4.5 },
-      { size: "16oz", price: 4.95 },
-      { size: "20oz", price: 5.45 },
-    ],
-  },
-  {
-    id: "fb_2",
-    name: "Vanilla Bean Latte",
-    category: "Hot Espresso",
-    basePrice: 4.75,
-    variations: [
-      { size: "12oz", price: 4.25 },
-      { size: "16oz", price: 4.75 },
-      { size: "20oz", price: 5.25 },
-    ],
-  },
-  {
-    id: "fb_3",
-    name: "White Chocolate Americano",
-    category: "Hot Espresso",
-    basePrice: 4.25,
-    variations: [
-      { size: "12oz", price: 3.75 },
-      { size: "16oz", price: 4.25 },
-      { size: "20oz", price: 4.75 },
-    ],
-  },
-  {
-    id: "fb_4",
-    name: "Honey Cinnamon Breve",
-    category: "Hot Espresso",
-    basePrice: 5.25,
-    variations: [
-      { size: "12oz", price: 4.75 },
-      { size: "16oz", price: 5.25 },
-      { size: "20oz", price: 5.75 },
-    ],
-  },
-  {
-    id: "fb_5",
-    name: "Salted Caramel Cold Brew",
-    category: "Cold Brew",
-    basePrice: 5.25,
-    variations: [
-      { size: "16oz", price: 5.25 },
-      { size: "24oz", price: 5.95 },
-      { size: "32oz", price: 6.75 },
-    ],
-  },
-  {
-    id: "fb_6",
-    name: "Nitro Sweet Cream",
-    category: "Cold Brew",
-    basePrice: 5.5,
-    variations: [
-      { size: "16oz", price: 5.5 },
-      { size: "24oz", price: 6.25 },
-    ],
-  },
-  {
-    id: "fb_7",
-    name: "Blue Raspberry Lotus",
-    category: "Energy",
-    basePrice: 5.75,
-    variations: [
-      { size: "16oz", price: 5.75 },
-      { size: "24oz", price: 6.5 },
-      { size: "32oz", price: 7.25 },
-    ],
-  },
-  {
-    id: "fb_8",
-    name: "Huckleberry Red Bull",
-    category: "Energy",
-    basePrice: 6.0,
-    variations: [
-      { size: "16oz", price: 6.0 },
-      { size: "24oz", price: 6.75 },
-      { size: "32oz", price: 7.5 },
-    ],
-  },
-  {
-    id: "fb_9",
-    name: "Spiced Chai Frappe",
-    category: "Cold Brew",
-    basePrice: 5.5,
-    variations: [
-      { size: "16oz", price: 5.5 },
-      { size: "24oz", price: 6.25 },
-    ],
-  },
-  {
-    id: "fb_10",
-    name: "Bacon Gouda Ciabatta",
-    category: "Food",
-    basePrice: 6.5,
-    variations: [{ size: "16oz", price: 6.5 }],
-  },
-  {
-    id: "fb_11",
-    name: "Dillanos One Love 12oz Bag",
-    category: "Retail",
-    basePrice: 18.0,
-    variations: [{ size: "12oz", price: 18.0 }],
-    isRetail: true,
-  },
-];
-
 export default function OnboardingRulesStepPage() {
   const router = useRouter();
   const [stageData, setStageData] = useState<IntakeStageData | null>(null);
@@ -347,7 +232,7 @@ export default function OnboardingRulesStepPage() {
       });
     });
 
-    return items.length > 0 ? items : FALLBACK_PREVIEW_ITEMS;
+    return items;
   }, [activeStagedDrinks, activeStagedRetail]);
 
   // Categories list for Square top pill bar & Clover left sidebar
@@ -1261,47 +1146,50 @@ export default function OnboardingRulesStepPage() {
 
               {/* Square 5x5 Tile Grid */}
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-                {Array.from({ length: 25 }, (_, idx) => {
-                  const item = filteredPreviewItems[idx];
-                  if (!item) {
+                {Array.from(
+                  { length: Math.max(25, filteredPreviewItems.length) },
+                  (_, idx) => {
+                    const item = filteredPreviewItems[idx];
+                    if (!item) {
+                      return (
+                        <div
+                          key={`empty_sq_${idx}`}
+                          className="h-24 rounded-xl border border-dashed border-slate-800/60 bg-slate-900/20 flex items-center justify-center text-[11px] font-mono text-slate-600"
+                        >
+                          [Empty Slot]
+                        </div>
+                      );
+                    }
                     return (
-                      <div
-                        key={`empty_sq_${idx}`}
-                        className="h-24 rounded-xl border border-dashed border-slate-800/60 bg-slate-900/20 flex items-center justify-center text-[11px] font-mono text-slate-700"
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => handleOpenDrinkModal(item)}
+                        className={`h-24 p-3 rounded-xl border text-left flex flex-col justify-between transition shadow-sm cursor-pointer ${getSquareTileAccent(
+                          item.category,
+                          item.isRetail
+                        )}`}
                       >
-                        [Open Slot]
-                      </div>
+                        <div>
+                          <span className="text-[10px] font-mono uppercase opacity-75 block truncate">
+                            {item.category}
+                          </span>
+                          <p className="text-xs font-bold leading-snug line-clamp-2 mt-0.5">
+                            {item.name}
+                          </p>
+                        </div>
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="text-xs font-mono font-extrabold">
+                            ${item.basePrice.toFixed(2)}
+                          </span>
+                          <span className="text-[10px] font-mono opacity-75">
+                            Mods →
+                          </span>
+                        </div>
+                      </button>
                     );
                   }
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => handleOpenDrinkModal(item)}
-                      className={`h-24 p-3 rounded-xl border text-left flex flex-col justify-between transition shadow-sm cursor-pointer ${getSquareTileAccent(
-                        item.category,
-                        item.isRetail
-                      )}`}
-                    >
-                      <div>
-                        <span className="text-[10px] font-mono uppercase opacity-75 block truncate">
-                          {item.category}
-                        </span>
-                        <p className="text-xs font-bold leading-snug line-clamp-2 mt-0.5">
-                          {item.name}
-                        </p>
-                      </div>
-                      <div className="flex items-center justify-between pt-1">
-                        <span className="text-xs font-mono font-extrabold">
-                          ${item.basePrice.toFixed(2)}
-                        </span>
-                        <span className="text-[10px] font-mono opacity-75">
-                          Mods →
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
+                )}
               </div>
             </div>
           )}
@@ -1365,31 +1253,47 @@ export default function OnboardingRulesStepPage() {
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                  {filteredPreviewItems.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => handleOpenDrinkModal(item)}
-                      className="h-24 p-3.5 rounded-xl bg-slate-900 hover:bg-slate-800/90 border-l-4 border-l-emerald-500 border border-slate-800 hover:border-emerald-500/50 text-left flex flex-col justify-between transition cursor-pointer"
-                    >
-                      <div>
-                        <p className="text-xs font-bold text-white line-clamp-2">
-                          {item.name}
-                        </p>
-                        <span className="text-[10px] font-mono text-slate-400">
-                          {item.category}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-mono font-bold text-emerald-400">
-                          ${item.basePrice.toFixed(2)}
-                        </span>
-                        <span className="text-[10px] font-mono text-slate-400">
-                          Customize
-                        </span>
-                      </div>
-                    </button>
-                  ))}
+                  {Array.from(
+                    { length: Math.max(16, filteredPreviewItems.length) },
+                    (_, idx) => {
+                      const item = filteredPreviewItems[idx];
+                      if (!item) {
+                        return (
+                          <div
+                            key={`empty_clv_${idx}`}
+                            className="h-24 rounded-xl border border-dashed border-slate-800/60 bg-slate-900/20 flex items-center justify-center text-[11px] font-mono text-slate-600"
+                          >
+                            [Empty Slot]
+                          </div>
+                        );
+                      }
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => handleOpenDrinkModal(item)}
+                          className="h-24 p-3.5 rounded-xl bg-slate-900 hover:bg-slate-800/90 border-l-4 border-l-emerald-500 border border-slate-800 hover:border-emerald-500/50 text-left flex flex-col justify-between transition cursor-pointer"
+                        >
+                          <div>
+                            <p className="text-xs font-bold text-white line-clamp-2">
+                              {item.name}
+                            </p>
+                            <span className="text-[10px] font-mono text-slate-400">
+                              {item.category}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-mono font-bold text-emerald-400">
+                              ${item.basePrice.toFixed(2)}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400">
+                              Customize
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    }
+                  )}
                 </div>
               </div>
             </div>

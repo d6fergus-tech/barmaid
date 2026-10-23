@@ -507,6 +507,38 @@ export function clearActiveStageAndRulesFromStorage(): void {
     sessionStorage.removeItem(INTAKE_STAGE_STORAGE_KEY);
     localStorage.removeItem(RULES_CONFIG_STORAGE_KEY_REF);
     sessionStorage.removeItem(RULES_CONFIG_STORAGE_KEY_REF);
+
+    const localKeysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k &&
+        k !== SAVED_SESSIONS_STORAGE_KEY &&
+        (k.startsWith("barmaid_pos_auth_") ||
+          k.startsWith("barmaid_studio_") ||
+          k === INTAKE_STAGE_STORAGE_KEY ||
+          k === RULES_CONFIG_STORAGE_KEY_REF)
+      ) {
+        localKeysToRemove.push(k);
+      }
+    }
+    localKeysToRemove.forEach((k) => localStorage.removeItem(k));
+
+    const sessionKeysToRemove: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i);
+      if (
+        k &&
+        k !== SAVED_SESSIONS_STORAGE_KEY &&
+        (k.startsWith("barmaid_pos_auth_") ||
+          k.startsWith("barmaid_studio_") ||
+          k === INTAKE_STAGE_STORAGE_KEY ||
+          k === RULES_CONFIG_STORAGE_KEY_REF)
+      ) {
+        sessionKeysToRemove.push(k);
+      }
+    }
+    sessionKeysToRemove.forEach((k) => sessionStorage.removeItem(k));
   } catch {
     // Ignore storage errors
   }

@@ -85,7 +85,7 @@ const createEmptyPage = (pageIndex: number): GridTile[] => {
   const startIndex = pageIndex * 20 + 1;
   return Array.from({ length: 20 }, (_, i) => ({
     id: startIndex + i,
-    label: "[ Empty Slot ]",
+    label: "[Empty Slot]",
     price: "",
     color: "blank",
   }));
@@ -115,10 +115,11 @@ const getItemColor = (name: string, categoryName?: string): TileColor => {
 
 const buildPagesFromCatalog = (
   items: StagedItem[],
-  modifiers: StagedModifier[]
+  modifiers: StagedModifier[],
+  archetype: ArchetypeId = "fast-cash"
 ): GridTile[][] => {
   if (items.length === 0 && modifiers.length === 0) {
-    return [FAST_CASH_PRESET];
+    return [createEmptyPage(0)];
   }
 
   const sorted = [...items].sort((a, b) => {
@@ -135,9 +136,23 @@ const buildPagesFromCatalog = (
     color: TileColor;
   }> = sorted.map((item) => {
     const primaryVar = item.variations[0];
+    const hasMultipleSizes = item.variations.length > 1;
+    const label =
+      archetype === "fast-cash" && primaryVar?.size
+        ? `${primaryVar.size} ${item.name}`
+        : item.name;
+    const price =
+      archetype === "specialty" && hasMultipleSizes
+        ? "Select Size"
+        : archetype === "color-coded" && hasMultipleSizes && primaryVar
+        ? `$${primaryVar.price.toFixed(2)}+`
+        : primaryVar
+        ? `$${primaryVar.price.toFixed(2)}`
+        : "$4.50";
+
     return {
-      label: `${primaryVar?.size ? primaryVar.size + " " : ""}${item.name}`,
-      price: primaryVar ? `$${primaryVar.price.toFixed(2)}` : "$4.50",
+      label,
+      price,
       color: getItemColor(item.name, item.categoryName),
     };
   });
@@ -164,7 +179,7 @@ const buildPagesFromCatalog = (
       if (!entry) {
         return {
           id: startSlotId + i,
-          label: "[ Empty Slot ]",
+          label: "[Empty Slot]",
           price: "",
           color: "blank" as TileColor,
         };
@@ -183,84 +198,6 @@ const buildPagesFromCatalog = (
   return generatedPages;
 };
 
-const FAST_CASH_PRESET: GridTile[] = [
-  { id: 1, label: "12oz Drip", price: "$2.75", color: "amber" },
-  { id: 2, label: "16oz Drip", price: "$3.25", color: "amber" },
-  { id: 3, label: "20oz Drip", price: "$3.75", color: "amber" },
-  { id: 4, label: "Refill", price: "$1.50", color: "slate" },
-  { id: 5, label: "Misc Food", price: "$4.00", color: "emerald" },
-
-  { id: 6, label: "16oz Latte", price: "$5.25", color: "amber" },
-  { id: 7, label: "20oz Latte", price: "$6.00", color: "amber" },
-  { id: 8, label: "16oz Vanilla", price: "$5.75", color: "amber" },
-  { id: 9, label: "20oz Vanilla", price: "$6.50", color: "amber" },
-  { id: 10, label: "Pastry ($4.50)", price: "$4.50", color: "emerald" },
-
-  { id: 11, label: "16oz Cold Brew", price: "$4.75", color: "cyan" },
-  { id: 12, label: "20oz Cold Brew", price: "$5.50", color: "cyan" },
-  { id: 13, label: "16oz Americano", price: "$3.75", color: "amber" },
-  { id: 14, label: "20oz Americano", price: "$4.25", color: "amber" },
-  { id: 15, label: "Muffin / Scone", price: "$4.00", color: "emerald" },
-
-  { id: 16, label: "Add Oat Milk", price: "+$0.75", color: "slate" },
-  { id: 17, label: "Add Almond", price: "+$0.75", color: "slate" },
-  { id: 18, label: "Extra Shot", price: "+$0.95", color: "slate" },
-  { id: 19, label: "Extra Syrup", price: "+$0.60", color: "slate" },
-  { id: 20, label: "Energy Lotus", price: "$6.25", color: "cyan" },
-];
-
-const SPECIALTY_PRESET: GridTile[] = [
-  { id: 1, label: "Drip Coffee", price: "Select Size", color: "amber" },
-  { id: 2, label: "Americano", price: "Select Size", color: "amber" },
-  { id: 3, label: "Latte", price: "Select Size", color: "amber" },
-  { id: 4, label: "Mocha", price: "Select Size", color: "amber" },
-  { id: 5, label: "Cappuccino", price: "8oz / 12oz", color: "amber" },
-
-  { id: 6, label: "Cold Brew", price: "Select Size", color: "cyan" },
-  { id: 7, label: "Nitro Brew", price: "Select Size", color: "cyan" },
-  { id: 8, label: "Iced Tea", price: "Select Size", color: "cyan" },
-  { id: 9, label: "Chai Latte", price: "Select Size", color: "amber" },
-  { id: 10, label: "Matcha", price: "Select Size", color: "emerald" },
-
-  { id: 11, label: "Croissant", price: "$4.75", color: "emerald" },
-  { id: 12, label: "Bagel w/ Cream", price: "$4.25", color: "emerald" },
-  { id: 13, label: "Cookie", price: "$3.50", color: "emerald" },
-  { id: 14, label: "Breakfast Burrito", price: "$7.50", color: "emerald" },
-  { id: 15, label: "Retail Beans 12oz", price: "$18.00", color: "slate" },
-
-  { id: 16, label: "Sub Oat", price: "+$0.75", color: "slate" },
-  { id: 17, label: "Sub Breve", price: "+$0.85", color: "slate" },
-  { id: 18, label: "Extra Shot", price: "+$0.95", color: "slate" },
-  { id: 19, label: "Vanilla Syrup", price: "+$0.60", color: "slate" },
-  { id: 20, label: "Caramel Sauce", price: "+$0.75", color: "slate" },
-];
-
-const COLOR_CODED_PRESET: GridTile[] = [
-  { id: 1, label: "Drip Coffee", price: "$2.75+", color: "amber" },
-  { id: 2, label: "Latte", price: "$4.50+", color: "amber" },
-  { id: 3, label: "Mocha", price: "$5.25+", color: "amber" },
-  { id: 4, label: "Cold Brew", price: "$4.50+", color: "cyan" },
-  { id: 5, label: "Lotus Energy", price: "$5.75+", color: "cyan" },
-
-  { id: 6, label: "Americano", price: "$3.50+", color: "amber" },
-  { id: 7, label: "Vanilla Latte", price: "$5.25+", color: "amber" },
-  { id: 8, label: "White Mocha", price: "$5.50+", color: "amber" },
-  { id: 9, label: "Nitro Brew", price: "$5.25+", color: "cyan" },
-  { id: 10, label: "Italian Soda", price: "$4.25+", color: "cyan" },
-
-  { id: 11, label: "Muffin", price: "$4.00", color: "emerald" },
-  { id: 12, label: "Scone", price: "$4.25", color: "emerald" },
-  { id: 13, label: "Bagel", price: "$3.75", color: "emerald" },
-  { id: 14, label: "Breakfast Wrap", price: "$7.00", color: "emerald" },
-  { id: 15, label: "[ Spacer / Open ]", price: "", color: "blank" },
-
-  { id: 16, label: "Sub Oat", price: "+$0.75", color: "slate" },
-  { id: 17, label: "Sub Almond", price: "+$0.75", color: "slate" },
-  { id: 18, label: "Sub Breve", price: "+$0.85", color: "slate" },
-  { id: 19, label: "Extra Shot", price: "+$0.95", color: "slate" },
-  { id: 20, label: "Flavor Pump", price: "+$0.60", color: "slate" },
-];
-
 export default function BarMaidDashboard() {
   const [activeTab, setActiveTab] = useState<
     "intake" | "audit" | "studio" | "deploy"
@@ -271,9 +208,9 @@ export default function BarMaidDashboard() {
   const [error, setError] = useState<string | null>(null);
 
   // Active Tenant Scope hydrated from 'barmaid_intake_stage'
-  const [merchantSlug, setMerchantSlug] = useState<string>("highway-espresso");
+  const [merchantSlug, setMerchantSlug] = useState<string>("unassigned");
   const [merchantDisplayName, setMerchantDisplayName] =
-    useState<string>("Highway Espresso");
+    useState<string>("Unassigned Merchant");
   const [posAuth, setPosAuth] = useState<PosAuthRecord | null>(null);
 
   // Live Square Raw Data Store
@@ -301,7 +238,7 @@ export default function BarMaidDashboard() {
   } | null>(null);
 
   // Dynamic Elastic Multi-Page State (Array of 20-Tile Pages)
-  const [pages, setPages] = useState<GridTile[][]>([FAST_CASH_PRESET]);
+  const [pages, setPages] = useState<GridTile[][]>(() => [createEmptyPage(0)]);
   const [activePageIndex, setActivePageIndex] = useState<number>(0);
   const [selectedTileId, setSelectedTileId] = useState<number>(1);
 
@@ -314,21 +251,25 @@ export default function BarMaidDashboard() {
   const boardInputRef = useRef<HTMLInputElement>(null);
   const posInputRef = useRef<HTMLInputElement>(null);
 
-  // Preset swap
-  const applyPreset = useCallback((arch: ArchetypeId) => {
-    let preset = FAST_CASH_PRESET;
-    if (arch === "specialty") preset = SPECIALTY_PRESET;
-    if (arch === "color-coded") preset = COLOR_CODED_PRESET;
-
-    setPages([preset]);
-    setActivePageIndex(0);
-    setSelectedTileId(1);
-  }, []);
+  // Preset swap dynamically over staged items/modifiers (or empty slots if unassigned)
+  const applyPreset = useCallback(
+    (arch: ArchetypeId) => {
+      const generated = buildPagesFromCatalog(
+        stagedItems,
+        stagedModifiers,
+        arch
+      );
+      setPages(generated);
+      setActivePageIndex(0);
+      setSelectedTileId(1);
+    },
+    [stagedItems, stagedModifiers]
+  );
 
   // Hydrate active tenant and staged drink/modifier catalog from 'barmaid_intake_stage'
   useEffect(() => {
-    let resolvedSlug = "highway-espresso";
-    let resolvedDisplayName = "Highway Espresso";
+    let resolvedSlug = "unassigned";
+    let resolvedDisplayName = "Unassigned Merchant";
     let customAccessToken = "";
 
     try {
@@ -371,24 +312,26 @@ export default function BarMaidDashboard() {
             parsedStage?.storeProfile?.legalName ||
             ""
         ) ||
-        "highway-espresso";
+        "unassigned";
 
       resolvedDisplayName =
         parsedStage?.storeProfile?.dbaName ||
         parsedStage?.storeProfile?.legalName ||
-        resolvedSlug;
+        (resolvedSlug === "unassigned" ? "Unassigned Merchant" : resolvedSlug);
 
       setMerchantSlug(resolvedSlug);
       setMerchantDisplayName(resolvedDisplayName);
 
       // Check saved POS auth token for this merchant_slug
-      const authKey = getPosAuthStorageKey(resolvedSlug);
-      const rawAuth =
-        localStorage.getItem(authKey) || sessionStorage.getItem(authKey);
-      if (rawAuth) {
-        const parsedAuth = JSON.parse(rawAuth) as PosAuthRecord;
-        setPosAuth(parsedAuth);
-        customAccessToken = parsedAuth.accessToken;
+      if (resolvedSlug && resolvedSlug !== "unassigned") {
+        const authKey = getPosAuthStorageKey(resolvedSlug);
+        const rawAuth =
+          localStorage.getItem(authKey) || sessionStorage.getItem(authKey);
+        if (rawAuth) {
+          const parsedAuth = JSON.parse(rawAuth) as PosAuthRecord;
+          setPosAuth(parsedAuth);
+          customAccessToken = parsedAuth.accessToken;
+        }
       }
 
       // Hydrate staged catalog items and modifiers into Studio Matrix
@@ -444,17 +387,22 @@ export default function BarMaidDashboard() {
           ...hydratedRetail,
         ];
 
-        if (combinedStagedItems.length > 0 || hydratedModifiers.length > 0) {
-          setStagedItems(combinedStagedItems);
-          setStagedModifiers(hydratedModifiers);
-          const hydratedPages = buildPagesFromCatalog(
-            combinedStagedItems,
-            hydratedModifiers
-          );
-          setPages(hydratedPages);
-          setActivePageIndex(0);
-          setSelectedTileId(1);
-        }
+        setStagedItems(combinedStagedItems);
+        setStagedModifiers(hydratedModifiers);
+        const hydratedPages = buildPagesFromCatalog(
+          combinedStagedItems,
+          hydratedModifiers,
+          "fast-cash"
+        );
+        setPages(hydratedPages);
+        setActivePageIndex(0);
+        setSelectedTileId(1);
+      } else {
+        setStagedItems([]);
+        setStagedModifiers([]);
+        setPages([createEmptyPage(0)]);
+        setActivePageIndex(0);
+        setSelectedTileId(1);
       }
     } catch {
       // Ignore storage parse errors
@@ -523,7 +471,7 @@ export default function BarMaidDashboard() {
   // Clear single active tile
   const handleClearCurrentTile = () => {
     updateActiveTile({
-      label: "[ Empty Slot ]",
+      label: "[Empty Slot]",
       price: "",
       color: "blank",
     });
@@ -542,7 +490,11 @@ export default function BarMaidDashboard() {
 
   // Populate from staged catalog
   const handleLoadStagedIntoMatrix = () => {
-    const generated = buildPagesFromCatalog(stagedItems, stagedModifiers);
+    const generated = buildPagesFromCatalog(
+      stagedItems,
+      stagedModifiers,
+      selectedArchetype
+    );
     setPages(generated);
     setActivePageIndex(0);
     setSelectedTileId(1);

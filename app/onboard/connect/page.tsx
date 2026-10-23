@@ -34,7 +34,7 @@ export interface PosAuthRecord {
 }
 
 export function getPosAuthStorageKey(merchantSlug: string): string {
-  return `barmaid_pos_auth_${merchantSlug || "highway-espresso"}`;
+  return `barmaid_pos_auth_${merchantSlug || "unassigned"}`;
 }
 
 interface CatalogPingApiResponse {
@@ -108,14 +108,16 @@ export default function OnboardingPosConnectStepPage() {
             parsedStage?.storeProfile?.legalName ||
             ""
         ) ||
-        "highway-espresso";
+        "unassigned";
 
-      const authKey = getPosAuthStorageKey(slug);
-      const rawAuth =
-        localStorage.getItem(authKey) || sessionStorage.getItem(authKey);
-      if (rawAuth) {
-        const parsedAuth = JSON.parse(rawAuth) as PosAuthRecord;
-        setPosAuth(parsedAuth);
+      if (slug && slug !== "unassigned") {
+        const authKey = getPosAuthStorageKey(slug);
+        const rawAuth =
+          localStorage.getItem(authKey) || sessionStorage.getItem(authKey);
+        if (rawAuth) {
+          const parsedAuth = JSON.parse(rawAuth) as PosAuthRecord;
+          setPosAuth(parsedAuth);
+        }
       }
     } catch {
       // Ignore storage read errors
@@ -132,13 +134,19 @@ export default function OnboardingPosConnectStepPage() {
         stageData?.storeProfile?.legalName ||
         ""
     ) ||
-    "highway-espresso";
+    "unassigned";
 
-  const drinksCount = stageData?.stagedCounts?.drinksCount ?? 43;
-  const modifiersCount = stageData?.stagedCounts?.modifiersCount ?? 40;
-  const retailCount = stageData?.stagedCounts?.retailCount ?? 3;
+  const drinksCount =
+    stageData?.stagedCounts?.drinksCount ??
+    (stageData?.stagedItems?.filter((d) => d.included).length ?? 0);
+  const modifiersCount =
+    stageData?.stagedCounts?.modifiersCount ??
+    (stageData?.modifiers?.filter((m) => m.included).length ?? 0);
+  const retailCount =
+    stageData?.stagedCounts?.retailCount ??
+    (stageData?.retailItems?.filter((r) => r.included).length ?? 0);
   const enabledSizesCount =
-    rulesConfig?.sizeMatrix?.filter((s) => s.enabled).length ?? 6;
+    rulesConfig?.sizeMatrix?.filter((s) => s.enabled).length ?? 0;
 
   // Open Modal Handler
   const handleOpenAuthModal = (provider: PosProvider) => {
