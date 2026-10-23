@@ -58,3 +58,24 @@ app/
 ├── onboard/            # 8-step merchant intake wizard
 ├── studio/             # 5×4 Register Ergonomics Layout Studio
 └── page.tsx            # Intake sandbox & multi-source upload dropzones
+### BarMaid Onboarding & POS Optimization Engine — Milestone Summary (v0.60)
+
+* **Deployment Architecture**:
+  - Migrated active mobile testing from local dev (`192.168.88.5:3000`) to production HTTPS on Vercel (`barmaid-green.vercel.app`)[cite: 17].
+  - Completely resolved mobile Safari WebSocket/HMR disconnect reloads and iOS camera memory crashes.
+
+* **Step 1: Document Intake & Multi-Source OCR**:
+  - Ingested and parsed physical menu boards and distributor delivery invoices for `highway-espresso`[cite: 22, 23, 24, 25].
+  - Normalized and deduplicated catalog into 43 drinks, 40 modifiers, 3 retail SKUs, and 8 excluded backroom supplies[cite: 22, 23, 24, 25].
+  - Added interactive classification override dropdowns (e.g., remapping retail snack items into food with real-time counter recalculation).
+
+* **Step 2: Business Rules & Matrix Config**:
+  - Implemented persistent hydration using `barmaid_intake_stage` in `localStorage`, maintaining state across forward and backward wizard navigation.
+  - Retained verified merchant profile (`highway-espresso`), cup size defaults, espresso shot recipe heuristics, and modifier add-on pricing rules.
+
+* **Step 3 & Ergonomics Studio Navigation**:
+  - Replaced passive alert banners on POS connection buttons with an interactive modal supporting direct Bearer access token input and cloud OAuth handshake.
+  - Scoped the Ergonomics Layout Studio to the active `merchant_slug` (`highway-espresso`) and added top-level persistent return navigation back to `/onboard/connect`.
+
+* **Verification Tag**:
+  - `git tag v0.60-onboarding-pipeline-road-ready` pushed to `d6fergus-tech/barmaid` on GitHub.

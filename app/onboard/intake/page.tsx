@@ -126,6 +126,65 @@ export interface IntakeStageData {
   stagedAt?: string;
 }
 
+export const SAVED_SESSIONS_STORAGE_KEY = "barmaid_saved_sessions";
+export const RULES_CONFIG_STORAGE_KEY_REF = "barmaid_rules_config";
+
+export interface OnboardingSessionCatalogEntry {
+  id: string;
+  name: string;
+  classification: ItemClassification;
+  categoryName?: string;
+  variations?: MenuVariation[];
+  targetGroup?: string;
+  unitCostCents?: number;
+  suggestedPriceCents?: number;
+  sku?: string;
+  packSize?: string;
+  vendorName?: string;
+  included: boolean;
+  sourceFileName: string;
+}
+
+export interface OnboardingSessionRulesSnapshot {
+  merchant_slug: string;
+  sizeMatrix: Array<{
+    size: "8oz" | "12oz" | "16oz" | "20oz" | "24oz" | "32oz";
+    enabled: boolean;
+    defaultShots: number;
+    defaultSyrupPumps: number;
+  }>;
+  modifierPricing: {
+    altMilkUpchargeDollars: number;
+    extraShotDollars: number;
+    syrupSauceAddOnDollars: number;
+  };
+  preferredPosPreview: "square" | "clover";
+  savedAt: string;
+}
+
+export interface OnboardingSession {
+  id: string;
+  createdAt: string;
+  storeProfile: {
+    legalName: string;
+    dbaName: string;
+    merchantSlug: string;
+    streetAddress: string;
+    city: string;
+    state: string;
+    zipCode: string;
+  };
+  counts: {
+    drinks: number;
+    modifiers: number;
+    retail: number;
+    supplies: number;
+  };
+  catalog: OnboardingSessionCatalogEntry[];
+  stageData?: IntakeStageData;
+  rulesConfig?: OnboardingSessionRulesSnapshot;
+}
+
 interface MenuOcrApiResponse {
   success?: boolean;
   error?: string;
@@ -235,6 +294,352 @@ function getClassificationSelectClasses(classification: ItemClassification): str
   }
 }
 
+export function buildCatalogFromStage(
+  stage: IntakeStageData
+): OnboardingSessionCatalogEntry[] {
+  const entries: OnboardingSessionCatalogEntry[] = [];
+
+  (stage.stagedItems || []).forEach((item) => {
+    entries.push({
+      id: item.id,
+      name: item.name,
+      classification: item.classification || "drink",
+      categoryName: item.categoryName,
+      variations: item.variations,
+      included: item.included,
+      sourceFileName: item.sourceFileName,
+    });
+  });
+
+  (stage.modifiers || []).forEach((mod) => {
+    entries.push({
+      id: mod.id,
+      name: mod.name,
+      classification: "modifier_option",
+      targetGroup: mod.targetGroup,
+      unitCostCents: mod.unitCostCents,
+      vendorName: mod.vendorName,
+      included: mod.included,
+      sourceFileName: mod.sourceFileName,
+    });
+  });
+
+  (stage.retailItems || []).forEach((ret) => {
+    entries.push({
+      id: ret.id,
+      name: ret.name,
+      classification: "retail_item",
+      unitCostCents: ret.unitCostCents,
+      suggestedPriceCents: ret.suggestedPriceCents,
+      sku: ret.sku,
+      vendorName: ret.vendorName,
+      included: ret.included,
+      sourceFileName: ret.sourceFileName,
+    });
+  });
+
+  (stage.supplies || []).forEach((sup) => {
+    entries.push({
+      id: sup.id,
+      name: sup.name,
+      classification: "operational_supply",
+      packSize: sup.packSize,
+      vendorName: sup.vendorName,
+      included: sup.included,
+      sourceFileName: sup.sourceFileName,
+    });
+  });
+
+  return entries;
+}
+
+export function readSavedSessionsFromStorage(): OnboardingSession[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw =
+      localStorage.getItem(SAVED_SESSIONS_STORAGE_KEY) ||
+      sessionStorage.getItem(SAVED_SESSIONS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as OnboardingSession[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeSavedSessionsToStorage(
+  sessions: OnboardingSession[]
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    const serialized = JSON.stringify(sessions);
+    localStorage.setItem(SAVED_SESSIONS_STORAGE_KEY, serialized);
+    sessionStorage.setItem(SAVED_SESSIONS_STORAGE_KEY, serialized);
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function upsertSessionInArchive(
+  stage: IntakeStageData,
+  rulesOverride?: OnboardingSessionRulesSnapshot
+): OnboardingSession[] {
+  if (typeof window === "undefined") return [];
+
+  const resolvedSlug =
+    stage.storeProfile.merchantSlug ||
+    toSlug(stage.storeProfile.dbaName || stage.storeProfile.legalName);
+
+  const hasAnyItems =
+    (stage.stagedItems?.length || 0) +
+      (stage.modifiers?.length || 0) +
+      (stage.retailItems?.length || 0) +
+      (stage.supplies?.length || 0) >
+    0;
+
+  // Do not archive blank/unassigned sessions with no merchant identity and no items
+  if (
+    (!resolvedSlug || resolvedSlug === "unassigned") &&
+    !stage.storeProfile.dbaName &&
+    !stage.storeProfile.legalName &&
+    !hasAnyItems
+  ) {
+    return readSavedSessionsFromStorage();
+  }
+
+  const uniqueSlug =
+    resolvedSlug && resolvedSlug !== "unassigned"
+      ? resolvedSlug
+      : `draft-${Date.now()}`;
+
+  const existingSessions = readSavedSessionsFromStorage();
+  const existingMatch = existingSessions.find(
+    (s) =>
+      s.storeProfile.merchantSlug === uniqueSlug || s.id === uniqueSlug
+  );
+
+  let resolvedRules = rulesOverride ?? existingMatch?.rulesConfig;
+  if (!resolvedRules) {
+    try {
+      const rawRules =
+        localStorage.getItem(RULES_CONFIG_STORAGE_KEY_REF) ||
+        sessionStorage.getItem(RULES_CONFIG_STORAGE_KEY_REF);
+      if (rawRules) {
+        const parsedRules = JSON.parse(
+          rawRules
+        ) as OnboardingSessionRulesSnapshot;
+        if (
+          !parsedRules.merchant_slug ||
+          parsedRules.merchant_slug === uniqueSlug
+        ) {
+          resolvedRules = parsedRules;
+        }
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
+  const normalizedProfile: StoreProfileData = {
+    legalName: stage.storeProfile.legalName || "",
+    dbaName: stage.storeProfile.dbaName || "",
+    merchantSlug: uniqueSlug,
+    streetAddress: stage.storeProfile.streetAddress || "",
+    city: stage.storeProfile.city || "",
+    state: stage.storeProfile.state || "",
+    zipCode: stage.storeProfile.zipCode || "",
+  };
+
+  const normalizedStage: IntakeStageData = {
+    ...stage,
+    storeProfile: normalizedProfile,
+  };
+
+  const sessionRecord: OnboardingSession = {
+    id: uniqueSlug,
+    createdAt: new Date().toISOString(),
+    storeProfile: normalizedProfile,
+    counts: {
+      drinks: stage.stagedCounts.drinksCount,
+      modifiers: stage.stagedCounts.modifiersCount,
+      retail: stage.stagedCounts.retailCount,
+      supplies: stage.stagedCounts.suppliesCount,
+    },
+    catalog: buildCatalogFromStage(normalizedStage),
+    stageData: normalizedStage,
+    rulesConfig: resolvedRules,
+  };
+
+  const filtered = existingSessions.filter(
+    (s) =>
+      s.storeProfile.merchantSlug !== uniqueSlug && s.id !== uniqueSlug
+  );
+  const nextSessions = [sessionRecord, ...filtered];
+  writeSavedSessionsToStorage(nextSessions);
+  return nextSessions;
+}
+
+export function deleteSessionFromArchive(
+  slugOrId: string
+): OnboardingSession[] {
+  const existing = readSavedSessionsFromStorage();
+  const next = existing.filter(
+    (s) => s.id !== slugOrId && s.storeProfile.merchantSlug !== slugOrId
+  );
+  writeSavedSessionsToStorage(next);
+  return next;
+}
+
+export function purgeAllSessionsFromArchive(): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(SAVED_SESSIONS_STORAGE_KEY);
+    sessionStorage.removeItem(SAVED_SESSIONS_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function clearActiveStageAndRulesFromStorage(): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(INTAKE_STAGE_STORAGE_KEY);
+    sessionStorage.removeItem(INTAKE_STAGE_STORAGE_KEY);
+    localStorage.removeItem(RULES_CONFIG_STORAGE_KEY_REF);
+    sessionStorage.removeItem(RULES_CONFIG_STORAGE_KEY_REF);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function restoreSessionToActiveStage(
+  session: OnboardingSession
+): IntakeStageData {
+  let stageToRestore: IntakeStageData;
+
+  if (session.stageData) {
+    stageToRestore = {
+      ...session.stageData,
+      storeProfile: { ...session.storeProfile },
+    };
+  } else {
+    const drinks: StagedMenuItem[] = [];
+    const modifiers: StagedModifierOption[] = [];
+    const retail: StagedRetailItem[] = [];
+    const supplies: StagedSupplyItem[] = [];
+
+    (session.catalog || []).forEach((entry) => {
+      if (entry.classification === "drink" || entry.classification === "food") {
+        drinks.push({
+          id: entry.id,
+          name: entry.name,
+          categoryName:
+            entry.categoryName ||
+            (entry.classification === "food"
+              ? "Food & Pastries"
+              : "Drinks & Beverages"),
+          variations:
+            entry.variations && entry.variations.length > 0
+              ? entry.variations
+              : [{ size: "16oz", price: 4.75 }],
+          included: entry.included,
+          classification: entry.classification,
+          sourceFileName: entry.sourceFileName || "session-archive",
+        });
+      } else if (entry.classification === "modifier_option") {
+        modifiers.push({
+          id: entry.id,
+          name: entry.name,
+          targetGroup: entry.targetGroup || "Flavor Syrups",
+          unitCostCents: entry.unitCostCents,
+          vendorName: entry.vendorName || "Archived Vendor",
+          included: entry.included,
+          classification: "modifier_option",
+          sourceFileName: entry.sourceFileName || "session-archive",
+        });
+      } else if (entry.classification === "retail_item") {
+        retail.push({
+          id: entry.id,
+          name: entry.name,
+          unitCostCents: entry.unitCostCents,
+          suggestedPriceCents: entry.suggestedPriceCents,
+          sku: entry.sku,
+          vendorName: entry.vendorName || "Archived Vendor",
+          included: entry.included,
+          classification: "retail_item",
+          sourceFileName: entry.sourceFileName || "session-archive",
+        });
+      } else if (entry.classification === "operational_supply") {
+        supplies.push({
+          id: entry.id,
+          name: entry.name,
+          packSize: entry.packSize,
+          vendorName: entry.vendorName || "Archived Vendor",
+          included: entry.included,
+          classification: "operational_supply",
+          sourceFileName: entry.sourceFileName || "session-archive",
+        });
+      }
+    });
+
+    stageToRestore = {
+      storeProfile: { ...session.storeProfile },
+      stagedCounts: {
+        drinksCount: session.counts.drinks,
+        modifiersCount: session.counts.modifiers,
+        retailCount: session.counts.retail,
+        suppliesCount: session.counts.supplies,
+      },
+      stagedItems: drinks,
+      modifiers,
+      retailItems: retail,
+      supplies,
+      uploadedFileNames: {
+        license: [],
+        menus: [],
+        invoices: [],
+      },
+      licenseDetected: Boolean(
+        session.storeProfile.legalName || session.storeProfile.dbaName
+      ),
+      stagedAt: session.createdAt,
+    };
+  }
+
+  try {
+    const serializedStage = JSON.stringify(stageToRestore);
+    localStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serializedStage);
+    sessionStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serializedStage);
+
+    if (session.rulesConfig) {
+      const serializedRules = JSON.stringify(session.rulesConfig);
+      localStorage.setItem(RULES_CONFIG_STORAGE_KEY_REF, serializedRules);
+      sessionStorage.setItem(RULES_CONFIG_STORAGE_KEY_REF, serializedRules);
+    } else {
+      localStorage.removeItem(RULES_CONFIG_STORAGE_KEY_REF);
+      sessionStorage.removeItem(RULES_CONFIG_STORAGE_KEY_REF);
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+
+  return stageToRestore;
+}
+
+export function exportAllSessionsJson(sessions: OnboardingSession[]): void {
+  if (typeof window === "undefined") return;
+  const payload = JSON.stringify(sessions, null, 2);
+  const blob = new Blob([payload], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "barmaid_sessions_backup.json";
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export default function MultiSourceIntakeStagingPage() {
   const router = useRouter();
 
@@ -255,9 +660,15 @@ export default function MultiSourceIntakeStagingPage() {
   const slugManuallyEditedRef = useRef<boolean>(false);
   const storeProfileRef = useRef<StoreProfileData>({ ...EMPTY_STORE_PROFILE });
   const isHydratedRef = useRef<boolean>(false);
+  const isResettingRef = useRef<boolean>(false);
 
   const [activeSlugBadge, setActiveSlugBadge] = useState<string>("");
   const [licenseDetected, setLicenseDetected] = useState<boolean>(false);
+
+  // Saved Client Sessions Archive ('barmaid_saved_sessions')
+  const [savedSessions, setSavedSessions] = useState<OnboardingSession[]>([]);
+  const [isSessionDrawerOpen, setIsSessionDrawerOpen] = useState<boolean>(false);
+  const [confirmPurgeAll, setConfirmPurgeAll] = useState<boolean>(false);
 
   // Staged extracted data (empty starting slate before hydration)
   const [stagedMenuItems, setStagedMenuItems] = useState<StagedMenuItem[]>([]);
@@ -317,7 +728,7 @@ export default function MultiSourceIntakeStagingPage() {
     setActiveSlugBadge(profile.merchantSlug || "");
   }, []);
 
-  // Build and persist canonical IntakeStageData to localStorage
+  // Build and persist canonical IntakeStageData to localStorage + auto-archive session
   const persistStageToStorage = useCallback(
     (overrides?: {
       profile?: StoreProfileData;
@@ -329,8 +740,10 @@ export default function MultiSourceIntakeStagingPage() {
       menFiles?: UploadedAsset[];
       invFiles?: UploadedAsset[];
       licDetected?: boolean;
+      archiveSession?: boolean;
     }) => {
       if (typeof window === "undefined") return;
+      if (isResettingRef.current) return;
 
       const profile = overrides?.profile ?? readStoreProfileFromDom();
       const drinks = overrides?.drinks ?? stagedMenuItems;
@@ -341,6 +754,27 @@ export default function MultiSourceIntakeStagingPage() {
       const menFiles = overrides?.menFiles ?? menuFiles;
       const invFiles = overrides?.invFiles ?? invoiceFiles;
       const licDetected = overrides?.licDetected ?? licenseDetected;
+
+      const isCompletelyBlank =
+        !profile.legalName &&
+        !profile.dbaName &&
+        !profile.merchantSlug &&
+        !profile.streetAddress &&
+        !profile.city &&
+        !profile.state &&
+        !profile.zipCode &&
+        drinks.length === 0 &&
+        modifiers.length === 0 &&
+        retail.length === 0 &&
+        supplies.length === 0 &&
+        licFiles.length === 0 &&
+        menFiles.length === 0 &&
+        invFiles.length === 0;
+
+      if (isCompletelyBlank) {
+        clearActiveStageAndRulesFromStorage();
+        return;
+      }
 
       const activeDrinksCount = drinks.filter((d) => d.included).length;
       const activeModifiersCount = modifiers.filter((m) => m.included).length;
@@ -375,6 +809,14 @@ export default function MultiSourceIntakeStagingPage() {
       } catch {
         // Ignore storage quota errors
       }
+
+      if (
+        overrides?.archiveSession !== false &&
+        Boolean(profile.merchantSlug || profile.dbaName || profile.legalName)
+      ) {
+        const updatedArchive = upsertSessionInArchive(stagePayload);
+        setSavedSessions(updatedArchive);
+      }
     },
     [
       readStoreProfileFromDom,
@@ -391,6 +833,8 @@ export default function MultiSourceIntakeStagingPage() {
 
   // Hydrate from localStorage on mount
   useEffect(() => {
+    setSavedSessions(readSavedSessionsFromStorage());
+
     try {
       const raw =
         localStorage.getItem(INTAKE_STAGE_STORAGE_KEY) ||
@@ -759,8 +1203,10 @@ export default function MultiSourceIntakeStagingPage() {
     [invoiceFiles]
   );
 
-  // Single consolidated Reset Intake handler
+  // True Full Merchant Reset handler
   const handleResetIntake = () => {
+    isResettingRef.current = true;
+
     licenseFiles.forEach((f) => {
       if (f.previewUrl.startsWith("blob:")) URL.revokeObjectURL(f.previewUrl);
     });
@@ -773,6 +1219,7 @@ export default function MultiSourceIntakeStagingPage() {
 
     slugManuallyEditedRef.current = false;
     writeStoreProfileToInputs({ ...EMPTY_STORE_PROFILE });
+    setActiveSlugBadge("");
     setLicenseDetected(false);
 
     setLicenseFiles([]);
@@ -788,14 +1235,131 @@ export default function MultiSourceIntakeStagingPage() {
     if (menuInputRef.current) menuInputRef.current.value = "";
     if (invoiceInputRef.current) invoiceInputRef.current.value = "";
 
-    try {
-      localStorage.removeItem(INTAKE_STAGE_STORAGE_KEY);
-      sessionStorage.removeItem(INTAKE_STAGE_STORAGE_KEY);
-    } catch {
-      // Ignore storage access errors
-    }
+    clearActiveStageAndRulesFromStorage();
 
-    setStatusBanner("Intake reset to a clean blank slate.");
+    setTimeout(() => {
+      isResettingRef.current = false;
+    }, 0);
+
+    setStatusBanner("Intake reset to a clean blank slate (merchant_slug: unassigned).");
+  };
+
+  // Session Manager Action 1: Load Business
+  const handleLoadSavedSession = (
+    session: OnboardingSession,
+    targetRoute?: "/onboard/intake" | "/onboard/rules"
+  ) => {
+    const restoredStage = restoreSessionToActiveStage(session);
+
+    writeStoreProfileToInputs(restoredStage.storeProfile);
+    slugManuallyEditedRef.current = Boolean(restoredStage.storeProfile.merchantSlug);
+    setLicenseDetected(Boolean(restoredStage.licenseDetected));
+
+    setStagedMenuItems(restoredStage.stagedItems || []);
+    setStagedModifiers(restoredStage.modifiers || []);
+    setStagedRetailItems(restoredStage.retailItems || []);
+    setStagedSupplies(restoredStage.supplies || []);
+
+    const licNames = restoredStage.uploadedFileNames?.license || [];
+    const menuNames = restoredStage.uploadedFileNames?.menus || [];
+    const invNames = restoredStage.uploadedFileNames?.invoices || [];
+
+    setLicenseFiles(
+      licNames.map((name, idx) => ({
+        id: `lic_restored_${idx}_${name}`,
+        zone: "license",
+        fileName: name,
+        fileSize: 0,
+        mimeType: name.toLowerCase().endsWith(".pdf")
+          ? "application/pdf"
+          : "image/jpeg",
+        previewUrl: "",
+        status: "ready",
+      }))
+    );
+    setMenuFiles(
+      menuNames.map((name, idx) => ({
+        id: `menu_restored_${idx}_${name}`,
+        zone: "menu",
+        fileName: name,
+        fileSize: 0,
+        mimeType: "image/jpeg",
+        previewUrl: "",
+        status: "ready",
+      }))
+    );
+    setInvoiceFiles(
+      invNames.map((name, idx) => ({
+        id: `inv_restored_${idx}_${name}`,
+        zone: "invoice",
+        fileName: name,
+        fileSize: 0,
+        mimeType: name.toLowerCase().endsWith(".pdf")
+          ? "application/pdf"
+          : "image/jpeg",
+        previewUrl: "",
+        status: "ready",
+      }))
+    );
+
+    setIsSessionDrawerOpen(false);
+    setConfirmPurgeAll(false);
+    setStatusBanner(
+      `Loaded business "${
+        session.storeProfile.dbaName ||
+        session.storeProfile.legalName ||
+        session.storeProfile.merchantSlug
+      }" (${session.storeProfile.merchantSlug}).`
+    );
+
+    if (targetRoute === "/onboard/rules") {
+      router.push("/onboard/rules");
+    }
+  };
+
+  // Session Manager Action 2: Export All Records (.json)
+  const handleExportAllSessions = () => {
+    const currentSessions = readSavedSessionsFromStorage();
+    exportAllSessionsJson(currentSessions);
+    setStatusBanner(
+      `Exported ${currentSessions.length} client session(s) to barmaid_sessions_backup.json.`
+    );
+  };
+
+  // Session Manager Action 3: Delete Record
+  const handleDeleteSavedSession = (slugOrId: string) => {
+    const nextSessions = deleteSessionFromArchive(slugOrId);
+    setSavedSessions(nextSessions);
+  };
+
+  // Session Manager Action 4: + Start New Shop
+  const handleStartNewShop = () => {
+    const currentProfile = readStoreProfileFromDom();
+    if (
+      currentProfile.merchantSlug ||
+      currentProfile.dbaName ||
+      currentProfile.legalName
+    ) {
+      persistStageToStorage({ profile: currentProfile, archiveSession: true });
+    }
+    handleResetIntake();
+    setIsSessionDrawerOpen(false);
+    setConfirmPurgeAll(false);
+    setStatusBanner(
+      "Previous progress archived. Ready to onboard a brand new shop."
+    );
+  };
+
+  // Session Manager Action 5: Purge All Sessions
+  const handlePurgeAllSessions = () => {
+    purgeAllSessionsFromArchive();
+    setSavedSessions([]);
+    setConfirmPurgeAll(false);
+    handleResetIntake();
+    setIsSessionDrawerOpen(false);
+    setStatusBanner(
+      "All saved client sessions and active working state have been permanently purged."
+    );
   };
 
   // Core processor for Dropzone 1: Business License
@@ -1445,8 +2009,8 @@ export default function MultiSourceIntakeStagingPage() {
             </div>
           </nav>
 
-          {/* Active Tenant Pill & Single Consolidated Reset Intake Button */}
-          <div className="flex items-center space-x-3">
+          {/* Active Tenant Pill, Past Sessions / History & Single Consolidated Reset Intake Button */}
+          <div className="flex flex-wrap items-center gap-2.5">
             <div className="bg-slate-950 border border-slate-800 rounded-full px-3.5 py-1.5 flex items-center space-x-2">
               <span
                 className={`h-2 w-2 rounded-full ${
@@ -1458,6 +2022,21 @@ export default function MultiSourceIntakeStagingPage() {
                 {activeSlugBadge || "unassigned"}
               </span>
             </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setSavedSessions(readSavedSessionsFromStorage());
+                setConfirmPurgeAll(false);
+                setIsSessionDrawerOpen(true);
+              }}
+              className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer"
+            >
+              <span>Past Sessions / History</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-slate-950 text-amber-400 font-mono text-[11px]">
+                {savedSessions.length}
+              </span>
+            </button>
 
             <button
               type="button"
@@ -2453,6 +3032,260 @@ export default function MultiSourceIntakeStagingPage() {
             )}
         </section>
       </main>
+
+      {/* Session Manager Modal / Drawer */}
+      {isSessionDrawerOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="session-archive-drawer-title"
+          onClick={() => {
+            setIsSessionDrawerOpen(false);
+            setConfirmPurgeAll(false);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex justify-end"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xl bg-slate-900 border-l border-slate-800 h-full flex flex-col justify-between shadow-2xl overflow-hidden"
+          >
+            {/* Drawer Header */}
+            <div className="p-6 border-b border-slate-800 bg-slate-950/90 flex items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                    barmaid_saved_sessions
+                  </span>
+                  <span className="text-xs font-mono text-slate-400">
+                    {savedSessions.length} Stored
+                  </span>
+                </div>
+                <h2
+                  id="session-archive-drawer-title"
+                  className="text-lg font-extrabold text-white mt-1"
+                >
+                  Past Sessions &amp; Client Onboarding Archive
+                </h2>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSessionDrawerOpen(false);
+                  setConfirmPurgeAll(false);
+                }}
+                aria-label="Close session drawer"
+                className="h-8 w-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center text-sm font-bold transition cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Top Action Bar inside Drawer: + Start New Shop & Export All Records (.json) */}
+            <div className="px-6 py-3.5 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2.5">
+              <button
+                type="button"
+                onClick={handleStartNewShop}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition cursor-pointer shadow-md shadow-amber-500/10"
+              >
+                + Start New Shop
+              </button>
+
+              <button
+                type="button"
+                disabled={savedSessions.length === 0}
+                onClick={handleExportAllSessions}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-emerald-300 text-xs font-bold transition cursor-pointer"
+              >
+                Export All Records (.json)
+              </button>
+            </div>
+
+            {/* Saved Business Cards List */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {savedSessions.length === 0 ? (
+                <div className="py-16 text-center border border-dashed border-slate-800 rounded-2xl p-6 space-y-2">
+                  <p className="text-sm font-bold text-slate-300">
+                    No Saved Client Sessions
+                  </p>
+                  <p className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed">
+                    As you enter merchant details or upload documents, BarMaid automatically archives each shop here by its unique{" "}
+                    <code className="font-mono text-amber-400">merchantSlug</code>.
+                  </p>
+                </div>
+              ) : (
+                savedSessions.map((session) => {
+                  const displayName =
+                    session.storeProfile.dbaName ||
+                    session.storeProfile.legalName ||
+                    session.storeProfile.merchantSlug;
+                  const formattedDate = (() => {
+                    try {
+                      return new Date(session.createdAt).toLocaleString();
+                    } catch {
+                      return session.createdAt;
+                    }
+                  })();
+                  const isCurrentActive =
+                    activeSlugBadge &&
+                    activeSlugBadge === session.storeProfile.merchantSlug;
+
+                  return (
+                    <div
+                      key={session.id}
+                      className={`rounded-2xl border p-4 space-y-3.5 transition ${
+                        isCurrentActive
+                          ? "bg-slate-950/90 border-amber-500/60 shadow-lg shadow-amber-500/5"
+                          : "bg-slate-950/60 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-sm font-extrabold text-white">
+                              {displayName}
+                            </h3>
+                            <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-amber-400 font-mono text-[11px]">
+                              {session.storeProfile.merchantSlug}
+                            </span>
+                            {isCurrentActive && (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-950 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold">
+                                Active
+                              </span>
+                            )}
+                          </div>
+                          {session.storeProfile.legalName &&
+                            session.storeProfile.legalName !== displayName && (
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                Legal: {session.storeProfile.legalName}
+                              </p>
+                            )}
+                          <p className="text-[11px] font-mono text-slate-500 mt-1">
+                            Saved: {formattedDate}
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleDeleteSavedSession(
+                              session.storeProfile.merchantSlug || session.id
+                            )
+                          }
+                          className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-rose-950/60 border border-slate-800 hover:border-rose-500/50 text-slate-400 hover:text-rose-300 text-[11px] font-semibold transition cursor-pointer"
+                        >
+                          Delete Record
+                        </button>
+                      </div>
+
+                      {/* Counts Row */}
+                      <div className="grid grid-cols-4 gap-2 text-center text-xs">
+                        <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg p-2">
+                          <span className="text-[10px] font-mono text-cyan-400 block">
+                            Drinks/Food
+                          </span>
+                          <span className="font-bold text-white">
+                            {session.counts.drinks}
+                          </span>
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg p-2">
+                          <span className="text-[10px] font-mono text-amber-400 block">
+                            Modifiers
+                          </span>
+                          <span className="font-bold text-white">
+                            {session.counts.modifiers}
+                          </span>
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg p-2">
+                          <span className="text-[10px] font-mono text-emerald-400 block">
+                            Retail
+                          </span>
+                          <span className="font-bold text-white">
+                            {session.counts.retail}
+                          </span>
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg p-2">
+                          <span className="text-[10px] font-mono text-slate-400 block">
+                            Supplies
+                          </span>
+                          <span className="font-bold text-slate-300">
+                            {session.counts.supplies}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Load Actions */}
+                      <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleLoadSavedSession(session, "/onboard/intake")
+                          }
+                          className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition cursor-pointer"
+                        >
+                          Load Business (Step 1)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleLoadSavedSession(session, "/onboard/rules")
+                          }
+                          className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold text-xs transition cursor-pointer"
+                        >
+                          Load &amp; Open Step 2 →
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Drawer Footer: Master Purge All Sessions */}
+            <div className="p-5 border-t border-slate-800 bg-slate-950/90">
+              {!confirmPurgeAll ? (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-xs text-slate-400">
+                    Master Archive Controls
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmPurgeAll(true)}
+                    className="px-4 py-2 rounded-xl bg-rose-950/70 hover:bg-rose-900/80 border border-rose-500/50 text-rose-200 text-xs font-bold transition cursor-pointer"
+                  >
+                    Purge All Sessions
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3.5 rounded-xl bg-rose-950/80 border border-rose-500/70 space-y-3">
+                  <p className="text-xs font-bold text-rose-200 leading-relaxed">
+                    Are you sure? This permanently deletes all{" "}
+                    {savedSessions.length} saved business session(s) from{" "}
+                    <code className="font-mono">barmaid_saved_sessions</code>{" "}
+                    and resets the current onboarding workspace.
+                  </p>
+                  <div className="flex items-center justify-end gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmPurgeAll(false)}
+                      className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePurgeAllSessions}
+                      className="px-4 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-slate-950 text-xs font-extrabold transition cursor-pointer"
+                    >
+                      Confirm Purge All
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Bottom Sticky Footer Action Bar */}
       <footer className="fixed bottom-0 inset-x-0 z-40 border-t border-slate-800 bg-slate-900/95 backdrop-blur px-6 py-3.5 shadow-2xl">

@@ -6,10 +6,18 @@ import { useRouter } from "next/navigation";
 import {
   INTAKE_STAGE_STORAGE_KEY,
   toSlug,
+  readSavedSessionsFromStorage,
+  upsertSessionInArchive,
+  deleteSessionFromArchive,
+  purgeAllSessionsFromArchive,
+  clearActiveStageAndRulesFromStorage,
+  restoreSessionToActiveStage,
+  exportAllSessionsJson,
   type IntakeStageData,
   type StagedMenuItem,
   type StagedModifierOption,
   type StagedRetailItem,
+  type OnboardingSession,
 } from "@/app/onboard/intake/page";
 
 export const RULES_CONFIG_STORAGE_KEY = "barmaid_rules_config";
@@ -187,6 +195,12 @@ export default function OnboardingRulesStepPage() {
   const [stageData, setStageData] = useState<IntakeStageData | null>(null);
   const [loaded, setLoaded] = useState<boolean>(false);
 
+  // Saved Client Sessions Archive ('barmaid_saved_sessions')
+  const [savedSessions, setSavedSessions] = useState<OnboardingSession[]>([]);
+  const [isSessionDrawerOpen, setIsSessionDrawerOpen] = useState<boolean>(false);
+  const [confirmPurgeAll, setConfirmPurgeAll] = useState<boolean>(false);
+  const [statusBanner, setStatusBanner] = useState<string | null>(null);
+
   // Business Rules state
   const [sizeMatrix, setSizeMatrix] = useState<CupSizeRule[]>(DEFAULT_SIZE_MATRIX);
   const [modifierPricing, setModifierPricing] = useState<ModifierPricingRules>(
@@ -205,6 +219,8 @@ export default function OnboardingRulesStepPage() {
 
   // Hydrate staged intake data and any previously saved business rules on mount
   useEffect(() => {
+    setSavedSessions(readSavedSessionsFromStorage());
+
     try {
       const rawStage =
         localStorage.getItem(INTAKE_STAGE_STORAGE_KEY) ||
@@ -212,6 +228,13 @@ export default function OnboardingRulesStepPage() {
       if (rawStage) {
         const parsedStage = JSON.parse(rawStage) as IntakeStageData;
         setStageData(parsedStage);
+        if (
+          parsedStage.storeProfile?.merchantSlug ||
+          parsedStage.storeProfile?.dbaName ||
+          parsedStage.storeProfile?.legalName
+        ) {
+          setSavedSessions(upsertSessionInArchive(parsedStage));
+        }
       }
 
       const rawRules =
@@ -252,20 +275,20 @@ export default function OnboardingRulesStepPage() {
     }
   }, []);
 
-  // Resolved merchant identity & counts (with clean fallbacks when accessed directly)
+  // Resolved merchant identity & counts
   const storeProfile = stageData?.storeProfile;
   const resolvedSlug =
     storeProfile?.merchantSlug ||
     toSlug(storeProfile?.dbaName || storeProfile?.legalName || "") ||
-    "highway-espresso";
+    "unassigned";
   const resolvedDba =
-    storeProfile?.dbaName || storeProfile?.legalName || "Highway Espresso";
+    storeProfile?.dbaName || storeProfile?.legalName || "Unassigned Merchant";
   const resolvedLegal = storeProfile?.legalName || resolvedDba;
-  const resolvedAddress = storeProfile?.streetAddress || "Verified Intake Location";
+  const resolvedAddress = storeProfile?.streetAddress || "No Street Address Staged";
   const resolvedCityStateZip =
     [storeProfile?.city, storeProfile?.state, storeProfile?.zipCode]
       .filter(Boolean)
-      .join(", ") || "WA";
+      .join(", ") || "—";
 
   const activeStagedDrinks: StagedMenuItem[] = useMemo(
     () => (stageData?.stagedItems || []).filter((d) => d.included),
@@ -281,14 +304,11 @@ export default function OnboardingRulesStepPage() {
   );
 
   const drinksCount =
-    stageData?.stagedCounts?.drinksCount ??
-    (activeStagedDrinks.length > 0 ? activeStagedDrinks.length : 43);
+    stageData?.stagedCounts?.drinksCount ?? activeStagedDrinks.length;
   const modifiersCount =
-    stageData?.stagedCounts?.modifiersCount ??
-    (activeStagedModifiers.length > 0 ? activeStagedModifiers.length : 40);
+    stageData?.stagedCounts?.modifiersCount ?? activeStagedModifiers.length;
   const retailCount =
-    stageData?.stagedCounts?.retailCount ??
-    (activeStagedRetail.length > 0 ? activeStagedRetail.length : 3);
+    stageData?.stagedCounts?.retailCount ?? activeStagedRetail.length;
   const suppliesCount =
     stageData?.stagedCounts?.suppliesCount ??
     stageData?.supplies?.filter((s) => !s.included).length ??
@@ -526,7 +546,111 @@ export default function OnboardingRulesStepPage() {
       // Ignore storage quota errors
     }
 
+    if (
+      stageData &&
+      resolvedSlug &&
+      resolvedSlug !== "unassigned"
+    ) {
+      const updatedArchive = upsertSessionInArchive(stageData, configPayload);
+      setSavedSessions(updatedArchive);
+    }
+
     router.push("/onboard/connect");
+  };
+
+  // Session Manager Action 1: Load Business
+  const handleLoadSavedSession = (
+    session: OnboardingSession,
+    targetRoute?: "/onboard/intake" | "/onboard/rules"
+  ) => {
+    const restoredStage = restoreSessionToActiveStage(session);
+    setStageData(restoredStage);
+
+    if (session.rulesConfig) {
+      if (
+        Array.isArray(session.rulesConfig.sizeMatrix) &&
+        session.rulesConfig.sizeMatrix.length > 0
+      ) {
+        setSizeMatrix(session.rulesConfig.sizeMatrix);
+      }
+      if (session.rulesConfig.modifierPricing) {
+        setModifierPricing(session.rulesConfig.modifierPricing);
+      }
+      if (
+        session.rulesConfig.preferredPosPreview === "square" ||
+        session.rulesConfig.preferredPosPreview === "clover"
+      ) {
+        setPosMode(session.rulesConfig.preferredPosPreview);
+      }
+    } else {
+      setSizeMatrix(DEFAULT_SIZE_MATRIX);
+      setModifierPricing(DEFAULT_MODIFIER_PRICING);
+    }
+
+    setIsSessionDrawerOpen(false);
+    setConfirmPurgeAll(false);
+    setStatusBanner(
+      `Loaded business "${
+        session.storeProfile.dbaName ||
+        session.storeProfile.legalName ||
+        session.storeProfile.merchantSlug
+      }" (${session.storeProfile.merchantSlug}).`
+    );
+
+    if (targetRoute === "/onboard/intake") {
+      router.push("/onboard/intake");
+    }
+  };
+
+  // Session Manager Action 2: Export All Records (.json)
+  const handleExportAllSessions = () => {
+    const currentSessions = readSavedSessionsFromStorage();
+    exportAllSessionsJson(currentSessions);
+    setStatusBanner(
+      `Exported ${currentSessions.length} client session(s) to barmaid_sessions_backup.json.`
+    );
+  };
+
+  // Session Manager Action 3: Delete Record
+  const handleDeleteSavedSession = (slugOrId: string) => {
+    const nextSessions = deleteSessionFromArchive(slugOrId);
+    setSavedSessions(nextSessions);
+  };
+
+  // Session Manager Action 4: + Start New Shop
+  const handleStartNewShop = () => {
+    if (stageData && resolvedSlug && resolvedSlug !== "unassigned") {
+      const configPayload: BusinessRulesConfig = {
+        merchant_slug: resolvedSlug,
+        sizeMatrix,
+        modifierPricing,
+        preferredPosPreview: posMode,
+        savedAt: new Date().toISOString(),
+      };
+      upsertSessionInArchive(stageData, configPayload);
+    }
+    clearActiveStageAndRulesFromStorage();
+    setStageData(null);
+    setSizeMatrix(DEFAULT_SIZE_MATRIX);
+    setModifierPricing(DEFAULT_MODIFIER_PRICING);
+    setIsSessionDrawerOpen(false);
+    setConfirmPurgeAll(false);
+    router.push("/onboard/intake");
+  };
+
+  // Session Manager Action 5: Purge All Sessions
+  const handlePurgeAllSessions = () => {
+    purgeAllSessionsFromArchive();
+    clearActiveStageAndRulesFromStorage();
+    setSavedSessions([]);
+    setStageData(null);
+    setSizeMatrix(DEFAULT_SIZE_MATRIX);
+    setModifierPricing(DEFAULT_MODIFIER_PRICING);
+    setConfirmPurgeAll(false);
+    setIsSessionDrawerOpen(false);
+    setStatusBanner(
+      "All saved client sessions and active working state have been permanently purged."
+    );
   };
 
   const getSquareTileAccent = (category: string, isRetail?: boolean): string => {
@@ -607,19 +731,58 @@ export default function OnboardingRulesStepPage() {
             </button>
           </nav>
 
-          {/* Active Tenant Pill */}
-          <div className="bg-slate-950 border border-slate-800 rounded-full px-3.5 py-1.5 flex items-center space-x-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-            <span className="text-xs text-slate-400">merchant_slug:</span>
-            <span className="text-xs font-bold text-amber-400 font-mono">
-              {resolvedSlug}
-            </span>
+          {/* Active Tenant Pill & Past Sessions / History Button */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="bg-slate-950 border border-slate-800 rounded-full px-3.5 py-1.5 flex items-center space-x-2">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  resolvedSlug && resolvedSlug !== "unassigned"
+                    ? "bg-emerald-400"
+                    : "bg-slate-600"
+                }`}
+              ></span>
+              <span className="text-xs text-slate-400">merchant_slug:</span>
+              <span className="text-xs font-bold text-amber-400 font-mono">
+                {resolvedSlug}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setSavedSessions(readSavedSessionsFromStorage());
+                setConfirmPurgeAll(false);
+                setIsSessionDrawerOpen(true);
+              }}
+              className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer"
+            >
+              <span>Past Sessions / History</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-slate-950 text-amber-400 font-mono text-[11px]">
+                {savedSessions.length}
+              </span>
+            </button>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 space-y-8">
+        {statusBanner && (
+          <div className="p-3.5 rounded-xl bg-slate-900/90 border border-amber-500/40 flex items-center justify-between gap-4">
+            <div className="flex items-center space-x-2.5 text-xs text-amber-300">
+              <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>
+              <span>{statusBanner}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setStatusBanner(null)}
+              className="text-xs text-slate-400 hover:text-white font-mono cursor-pointer"
+            >
+              [Dismiss]
+            </button>
+          </div>
+        )}
+
         {/* Page Header */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -1418,6 +1581,261 @@ export default function OnboardingRulesStepPage() {
                   Done
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Session Manager Modal / Drawer */}
+      {isSessionDrawerOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="rules-session-archive-drawer-title"
+          onClick={() => {
+            setIsSessionDrawerOpen(false);
+            setConfirmPurgeAll(false);
+          }}
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex justify-end"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xl bg-slate-900 border-l border-slate-800 h-full flex flex-col justify-between shadow-2xl overflow-hidden"
+          >
+            {/* Drawer Header */}
+            <div className="p-6 border-b border-slate-800 bg-slate-950/90 flex items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                    barmaid_saved_sessions
+                  </span>
+                  <span className="text-xs font-mono text-slate-400">
+                    {savedSessions.length} Stored
+                  </span>
+                </div>
+                <h2
+                  id="rules-session-archive-drawer-title"
+                  className="text-lg font-extrabold text-white mt-1"
+                >
+                  Past Sessions &amp; Client Onboarding Archive
+                </h2>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSessionDrawerOpen(false);
+                  setConfirmPurgeAll(false);
+                }}
+                aria-label="Close session drawer"
+                className="h-8 w-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center text-sm font-bold transition cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Top Action Bar inside Drawer: + Start New Shop & Export All Records (.json) */}
+            <div className="px-6 py-3.5 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2.5">
+              <button
+                type="button"
+                onClick={handleStartNewShop}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition cursor-pointer shadow-md shadow-amber-500/10"
+              >
+                + Start New Shop
+              </button>
+
+              <button
+                type="button"
+                disabled={savedSessions.length === 0}
+                onClick={handleExportAllSessions}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-emerald-300 text-xs font-bold transition cursor-pointer"
+              >
+                Export All Records (.json)
+              </button>
+            </div>
+
+            {/* Saved Business Cards List */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {savedSessions.length === 0 ? (
+                <div className="py-16 text-center border border-dashed border-slate-800 rounded-2xl p-6 space-y-2">
+                  <p className="text-sm font-bold text-slate-300">
+                    No Saved Client Sessions
+                  </p>
+                  <p className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed">
+                    As you enter merchant details or upload documents, BarMaid automatically archives each shop here by its unique{" "}
+                    <code className="font-mono text-amber-400">merchantSlug</code>.
+                  </p>
+                </div>
+              ) : (
+                savedSessions.map((session) => {
+                  const displayName =
+                    session.storeProfile.dbaName ||
+                    session.storeProfile.legalName ||
+                    session.storeProfile.merchantSlug;
+                  const formattedDate = (() => {
+                    try {
+                      return new Date(session.createdAt).toLocaleString();
+                    } catch {
+                      return session.createdAt;
+                    }
+                  })();
+                  const isCurrentActive =
+                    resolvedSlug &&
+                    resolvedSlug !== "unassigned" &&
+                    resolvedSlug === session.storeProfile.merchantSlug;
+
+                  return (
+                    <div
+                      key={session.id}
+                      className={`rounded-2xl border p-4 space-y-3.5 transition ${
+                        isCurrentActive
+                          ? "bg-slate-950/90 border-amber-500/60 shadow-lg shadow-amber-500/5"
+                          : "bg-slate-950/60 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-sm font-extrabold text-white">
+                              {displayName}
+                            </h3>
+                            <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-amber-400 font-mono text-[11px]">
+                              {session.storeProfile.merchantSlug}
+                            </span>
+                            {isCurrentActive && (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-950 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold">
+                                Active
+                              </span>
+                            )}
+                          </div>
+                          {session.storeProfile.legalName &&
+                            session.storeProfile.legalName !== displayName && (
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                Legal: {session.storeProfile.legalName}
+                              </p>
+                            )}
+                          <p className="text-[11px] font-mono text-slate-500 mt-1">
+                            Saved: {formattedDate}
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleDeleteSavedSession(
+                              session.storeProfile.merchantSlug || session.id
+                            )
+                          }
+                          className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-rose-950/60 border border-slate-800 hover:border-rose-500/50 text-slate-400 hover:text-rose-300 text-[11px] font-semibold transition cursor-pointer"
+                        >
+                          Delete Record
+                        </button>
+                      </div>
+
+                      {/* Counts Row */}
+                      <div className="grid grid-cols-4 gap-2 text-center text-xs">
+                        <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg p-2">
+                          <span className="text-[10px] font-mono text-cyan-400 block">
+                            Drinks/Food
+                          </span>
+                          <span className="font-bold text-white">
+                            {session.counts.drinks}
+                          </span>
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg p-2">
+                          <span className="text-[10px] font-mono text-amber-400 block">
+                            Modifiers
+                          </span>
+                          <span className="font-bold text-white">
+                            {session.counts.modifiers}
+                          </span>
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg p-2">
+                          <span className="text-[10px] font-mono text-emerald-400 block">
+                            Retail
+                          </span>
+                          <span className="font-bold text-white">
+                            {session.counts.retail}
+                          </span>
+                        </div>
+                        <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg p-2">
+                          <span className="text-[10px] font-mono text-slate-400 block">
+                            Supplies
+                          </span>
+                          <span className="font-bold text-slate-300">
+                            {session.counts.supplies}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Load Actions */}
+                      <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleLoadSavedSession(session, "/onboard/rules")
+                          }
+                          className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition cursor-pointer"
+                        >
+                          Load Business (Step 2)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleLoadSavedSession(session, "/onboard/intake")
+                          }
+                          className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold text-xs transition cursor-pointer"
+                        >
+                          ← Load in Step 1 (Intake)
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Drawer Footer: Master Purge All Sessions */}
+            <div className="p-5 border-t border-slate-800 bg-slate-950/90">
+              {!confirmPurgeAll ? (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-xs text-slate-400">
+                    Master Archive Controls
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmPurgeAll(true)}
+                    className="px-4 py-2 rounded-xl bg-rose-950/70 hover:bg-rose-900/80 border border-rose-500/50 text-rose-200 text-xs font-bold transition cursor-pointer"
+                  >
+                    Purge All Sessions
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3.5 rounded-xl bg-rose-950/80 border border-rose-500/70 space-y-3">
+                  <p className="text-xs font-bold text-rose-200 leading-relaxed">
+                    Are you sure? This permanently deletes all{" "}
+                    {savedSessions.length} saved business session(s) from{" "}
+                    <code className="font-mono">barmaid_saved_sessions</code>{" "}
+                    and resets the current onboarding workspace.
+                  </p>
+                  <div className="flex items-center justify-end gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmPurgeAll(false)}
+                      className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePurgeAllSessions}
+                      className="px-4 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-slate-950 text-xs font-extrabold transition cursor-pointer"
+                    >
+                      Confirm Purge All
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
