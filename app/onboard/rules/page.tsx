@@ -17,12 +17,77 @@ import {
   type StagedMenuItem,
   type StagedModifierOption,
   type StagedRetailItem,
+  type StagedSupplyItem,
   type OnboardingSession,
 } from "@/app/onboard/intake/page";
 
 export const RULES_CONFIG_STORAGE_KEY = "barmaid_rules_config";
 
 export type CupSizeLabel = "8oz" | "12oz" | "16oz" | "20oz" | "24oz" | "32oz";
+
+export type ModalAssignableCategory =
+  | "Beverages"
+  | "Food"
+  | "Retail"
+  | "Supplies";
+
+const MODAL_CATEGORY_OPTIONS: readonly ModalAssignableCategory[] = [
+  "Beverages",
+  "Food",
+  "Retail",
+  "Supplies",
+];
+
+const CANONICAL_REGISTER_TABS = [
+  "All Items",
+  "Beverages",
+  "Food",
+  "Retail",
+] as const;
+
+export function normalizeRegisterCategory(
+  rawCategory?: string,
+  classification?: "drink" | "food" | "retail_item" | "operational_supply"
+): string {
+  const trimmed = (rawCategory || "").trim();
+
+  if (
+    classification === "retail_item" ||
+    /^retail(\s*(&|and)\s*bulk|\s+packaged|\s+items?|\s+skus?)?$/i.test(
+      trimmed
+    ) ||
+    /^bulk(\s+retail)?$/i.test(trimmed)
+  ) {
+    return "Retail";
+  }
+
+  if (
+    /^supplies|operational\s+suppl(y|ies)$/i.test(trimmed) ||
+    classification === "operational_supply"
+  ) {
+    return "Supplies";
+  }
+
+  if (
+    classification === "food" ||
+    /^(food(\s*(&|and)\s*(pastries|bakery|snacks?))?|pastries|pastry|bakery|snacks?|breakfast|sandwiches)$/i.test(
+      trimmed
+    )
+  ) {
+    return "Food";
+  }
+
+  if (
+    !trimmed ||
+    /^(beverages?|drinks?(\s*(&|and)\s*beverages?)?|espresso(\s*(&|and)\s*classics?)?|hot\s+espresso|iced\s+espresso|coffee|cold\s+brew|energy(\s+drinks?)?|lotus(\s+energy)?|tea(\s*(&|and)\s*boba)?|boba|smoothies?|frappes?|blended|classics?|kiddie(\s+corner)?|kids(\s+drinks?)?|big\s+train|specialty(\s+drinks?)?|hot\s+drinks?|cold\s+drinks?)$/i.test(
+      trimmed
+    )
+  ) {
+    return "Beverages";
+  }
+
+  return trimmed;
+}
 
 export interface CupSizeRule {
   size: CupSizeLabel;
@@ -101,6 +166,7 @@ export default function OnboardingRulesStepPage() {
   const [selectedModalSize, setSelectedModalSize] = useState<CupSizeLabel>("16oz");
   const [selectedModalMods, setSelectedModalMods] = useState<string[]>([]);
   const [extraShotsCount, setExtraShotsCount] = useState<number>(0);
+  const [retailQuantity, setRetailQuantity] = useState<number>(1);
 
   // Hydrate staged intake data and any previously saved business rules on mount
   useEffect(() => {
@@ -112,6 +178,32 @@ export default function OnboardingRulesStepPage() {
         sessionStorage.getItem(INTAKE_STAGE_STORAGE_KEY);
       if (rawStage) {
         const parsedStage = JSON.parse(rawStage) as IntakeStageData;
+        let wasNormalized = false;
+
+        if (Array.isArray(parsedStage.stagedItems)) {
+          parsedStage.stagedItems = parsedStage.stagedItems.map((item) => {
+            const normCat = normalizeRegisterCategory(
+              item.categoryName,
+              item.classification
+            );
+            if (normCat !== item.categoryName) {
+              wasNormalized = true;
+              return { ...item, categoryName: normCat };
+            }
+            return item;
+          });
+        }
+
+        if (wasNormalized) {
+          try {
+            const serializedStage = JSON.stringify(parsedStage);
+            localStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serializedStage);
+            sessionStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serializedStage);
+          } catch {
+            // Ignore storage quota errors
+          }
+        }
+
         setStageData(parsedStage);
         if (
           parsedStage.storeProfile?.merchantSlug ||
@@ -203,19 +295,26 @@ export default function OnboardingRulesStepPage() {
     stageData?.supplies?.filter((s) => !s.included).length ??
     0;
 
-  // Build unified POS preview items from staged drinks + retail items (or fallback preview items)
+  // Build unified POS preview items from staged drinks + retail items (normalizing 'Retail & Bulk' -> 'Retail')
   const previewItems: PreviewCatalogItem[] = useMemo(() => {
     const items: PreviewCatalogItem[] = [];
 
     activeStagedDrinks.forEach((d) => {
+      const normalizedCategory = normalizeRegisterCategory(
+        d.categoryName,
+        d.classification
+      );
+      if (normalizedCategory === "Supplies") return;
+
       const baseVar = d.variations[0];
       items.push({
         id: d.id,
         name: d.name,
-        category: d.categoryName || "Hot Espresso",
+        category: normalizedCategory,
         basePrice: baseVar?.price ?? 4.75,
         variations:
           d.variations.length > 0 ? d.variations : [{ size: "16oz", price: 4.75 }],
+        isRetail: normalizedCategory === "Retail",
       });
     });
 
@@ -239,17 +338,70 @@ export default function OnboardingRulesStepPage() {
     return items;
   }, [activeStagedDrinks, activeStagedRetail]);
 
-  // Categories list for Square top pill bar & Clover left sidebar
+  // Categories list for Square top pill bar & Clover left sidebar:
+  // Strictly ['All Items', 'Beverages', 'Food', 'Retail'] plus any custom user categories
   const categoriesList: string[] = useMemo(() => {
-    const unique = new Set<string>();
-    previewItems.forEach((item) => unique.add(item.category));
-    return ["All Items", ...Array.from(unique)];
+    const baseTabs: string[] = [...CANONICAL_REGISTER_TABS];
+    const customCategories: string[] = [];
+
+    previewItems.forEach((item) => {
+      const cat =
+        item.category === "Retail & Bulk" ? "Retail" : item.category;
+      if (
+        cat &&
+        !baseTabs.includes(cat) &&
+        !customCategories.includes(cat) &&
+        cat !== "Supplies"
+      ) {
+        customCategories.push(cat);
+      }
+    });
+
+    return [...baseTabs, ...customCategories];
   }, [previewItems]);
 
   const filteredPreviewItems = useMemo(() => {
     if (selectedCategory === "All Items") return previewItems;
     return previewItems.filter((item) => item.category === selectedCategory);
   }, [previewItems, selectedCategory]);
+
+  // Extract food-only modifiers (e.g., Warm/Toasted, spreads) if present in staged modifiers
+  const foodModifierGroups: GroupedModifiers[] = useMemo(() => {
+    const foodSet = new Set<string>();
+
+    activeStagedModifiers.forEach((mod) => {
+      const cleanName = mod.name.trim();
+      if (!cleanName) return;
+      const combined = `${cleanName} ${mod.targetGroup || ""}`;
+
+      const isBeverageMod =
+        !/cream\s*cheese/i.test(combined) &&
+        /milk|oat|almond|coconut|soy|breve|cream|dairy|syrup|vanilla|caramel|hazelnut|lavender|mocha|white\s*choc|white\s*coffee|popping|pearl|boba|lotus|red\s*bull|rebel|energy|shot|espresso|frappe|chai|matcha|powder|smoothie|tea|torani|monin|ghirardelli|big\s*train/i.test(
+          combined
+        );
+
+      const isFoodMod =
+        /warm|toast|heat|spread|cream\s*cheese|butter|jam|jelly|honey|peanut\s*butter|avocado|bacon|egg|sausage|ham|cheddar|swiss|gouda|provolone|salsa|sriracha|everything\s*seasoning/i.test(
+          combined
+        );
+
+      if (isFoodMod && !isBeverageMod) {
+        foodSet.add(cleanName);
+      }
+    });
+
+    if (foodSet.size === 0) {
+      return [];
+    }
+
+    return [
+      {
+        groupLabel: "Food Preparation & Spreads",
+        upchargePrice: modifierPricing.syrupSauceAddOnDollars,
+        options: Array.from(foodSet),
+      },
+    ];
+  }, [activeStagedModifiers, modifierPricing.syrupSauceAddOnDollars]);
 
   // Build deduplicated Modifier Groups for the Modifier Pop-Out Sheet directly from staged modifiers
   const deduplicatedModifierGroups: GroupedModifiers[] = useMemo(() => {
@@ -353,7 +505,7 @@ export default function OnboardingRulesStepPage() {
     );
   };
 
-  // Open Drink Modifier Pop-Out Sheet
+  // Open Drink / Item Detail Modal
   const handleOpenDrinkModal = (item: PreviewCatalogItem) => {
     setActiveDrinkModal(item);
     const enabledSizes = sizeMatrix.filter((s) => s.enabled);
@@ -364,6 +516,205 @@ export default function OnboardingRulesStepPage() {
     setSelectedModalSize(defaultSize);
     setSelectedModalMods([]);
     setExtraShotsCount(0);
+    setRetailQuantity(1);
+  };
+
+  // Interactive Category Re-assignment inside the Step 2 Item Modal
+  const handleModalCategoryChange = (
+    itemId: string,
+    nextCategory: ModalAssignableCategory
+  ) => {
+    setSelectedModalMods([]);
+    setExtraShotsCount(0);
+    setRetailQuantity(1);
+
+    if (!stageData) {
+      setActiveDrinkModal((prev) =>
+        prev && prev.id === itemId
+          ? {
+              ...prev,
+              category: nextCategory,
+              isRetail: nextCategory === "Retail",
+            }
+          : prev
+      );
+      return;
+    }
+
+    const existingDrinkOrFood = (stageData.stagedItems || []).find(
+      (d) => d.id === itemId
+    );
+    const existingRetail = (stageData.retailItems || []).find(
+      (r) => r.id === itemId
+    );
+    const existingSupply = (stageData.supplies || []).find(
+      (s) => s.id === itemId
+    );
+
+    const itemName =
+      existingDrinkOrFood?.name ||
+      existingRetail?.name ||
+      existingSupply?.name ||
+      activeDrinkModal?.name ||
+      "Staged Item";
+    const sourceFileName =
+      existingDrinkOrFood?.sourceFileName ||
+      existingRetail?.sourceFileName ||
+      existingSupply?.sourceFileName ||
+      "manual-override";
+
+    const basePrice = existingDrinkOrFood
+      ? existingDrinkOrFood.variations[0]?.price ??
+        activeDrinkModal?.basePrice ??
+        4.75
+      : existingRetail
+      ? typeof existingRetail.suggestedPriceCents === "number" &&
+        existingRetail.suggestedPriceCents > 0
+        ? existingRetail.suggestedPriceCents / 100
+        : typeof existingRetail.unitCostCents === "number" &&
+          existingRetail.unitCostCents > 0
+        ? (existingRetail.unitCostCents * 2) / 100
+        : activeDrinkModal?.basePrice ?? 16.0
+      : activeDrinkModal?.basePrice ?? 4.75;
+
+    const unitCostCents = existingRetail?.unitCostCents;
+    const sku = existingRetail?.sku;
+    const vendorName =
+      existingRetail?.vendorName ||
+      existingSupply?.vendorName ||
+      "Staged Override";
+
+    const nextDrinks: StagedMenuItem[] = (stageData.stagedItems || []).filter(
+      (d) => d.id !== itemId
+    );
+    const nextRetail: StagedRetailItem[] = (stageData.retailItems || []).filter(
+      (r) => r.id !== itemId
+    );
+    const nextSupplies: StagedSupplyItem[] = (stageData.supplies || []).filter(
+      (s) => s.id !== itemId
+    );
+    const nextModifiers: StagedModifierOption[] = stageData.modifiers || [];
+
+    let updatedModalVariations: Array<{ size: string; price: number }> = [
+      { size: "16oz", price: Number(basePrice.toFixed(2)) },
+    ];
+
+    if (nextCategory === "Beverages") {
+      const hasDrinkSizes =
+        existingDrinkOrFood &&
+        existingDrinkOrFood.variations.length > 0 &&
+        !existingDrinkOrFood.variations.every((v) =>
+          /^(retail|regular|single|unit)$/i.test(v.size.trim())
+        );
+
+      updatedModalVariations = hasDrinkSizes
+        ? existingDrinkOrFood.variations
+        : [
+            {
+              size: "12oz",
+              price: Math.max(0.5, Number((basePrice - 0.5).toFixed(2))),
+            },
+            { size: "16oz", price: Number(basePrice.toFixed(2)) },
+            { size: "20oz", price: Number((basePrice + 0.5).toFixed(2)) },
+          ];
+
+      nextDrinks.push({
+        id: itemId,
+        name: itemName,
+        categoryName: "Beverages",
+        variations: updatedModalVariations,
+        included: true,
+        classification: "drink",
+        sourceFileName,
+      });
+    } else if (nextCategory === "Food") {
+      updatedModalVariations = [
+        { size: "Regular", price: Number(basePrice.toFixed(2)) },
+      ];
+      nextDrinks.push({
+        id: itemId,
+        name: itemName,
+        categoryName: "Food",
+        variations: updatedModalVariations,
+        included: true,
+        classification: "food",
+        sourceFileName,
+      });
+    } else if (nextCategory === "Retail") {
+      updatedModalVariations = [
+        { size: "Retail", price: Number(basePrice.toFixed(2)) },
+      ];
+      nextRetail.push({
+        id: itemId,
+        name: itemName,
+        unitCostCents,
+        suggestedPriceCents: Math.round(basePrice * 100),
+        sku,
+        vendorName,
+        included: true,
+        classification: "retail_item",
+        sourceFileName,
+      });
+    } else if (nextCategory === "Supplies") {
+      updatedModalVariations = [
+        { size: "Supply", price: Number(basePrice.toFixed(2)) },
+      ];
+      nextSupplies.push({
+        id: itemId,
+        name: itemName,
+        packSize: existingSupply?.packSize,
+        vendorName,
+        included: false,
+        classification: "operational_supply",
+        sourceFileName,
+      });
+    }
+
+    const nextStageData: IntakeStageData = {
+      ...stageData,
+      stagedCounts: {
+        drinksCount: nextDrinks.filter((d) => d.included).length,
+        modifiersCount: nextModifiers.filter((m) => m.included).length,
+        retailCount: nextRetail.filter((r) => r.included).length,
+        suppliesCount: nextSupplies.filter((s) => !s.included).length,
+      },
+      stagedItems: nextDrinks,
+      modifiers: nextModifiers,
+      retailItems: nextRetail,
+      supplies: nextSupplies,
+      stagedAt: new Date().toISOString(),
+    };
+
+    setStageData(nextStageData);
+
+    try {
+      const serialized = JSON.stringify(nextStageData);
+      localStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serialized);
+      sessionStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serialized);
+    } catch {
+      // Ignore storage quota errors
+    }
+
+    if (
+      nextStageData.storeProfile?.merchantSlug ||
+      nextStageData.storeProfile?.dbaName ||
+      nextStageData.storeProfile?.legalName
+    ) {
+      setSavedSessions(upsertSessionInArchive(nextStageData));
+    }
+
+    setActiveDrinkModal((prev) =>
+      prev && prev.id === itemId
+        ? {
+            ...prev,
+            category: nextCategory,
+            isRetail: nextCategory === "Retail",
+            variations: updatedModalVariations,
+          }
+        : prev
+    );
+
+    setStatusBanner(`Reassigned "${itemName}" to ${nextCategory}.`);
   };
 
   const toggleModalModifier = (optionName: string) => {
@@ -374,9 +725,52 @@ export default function OnboardingRulesStepPage() {
     );
   };
 
-  // Compute live price inside the Modifier Pop-Out Preview
+  // Compute live price inside the Item / Modifier Pop-Out Preview
   const activeModalComputation = useMemo(() => {
     if (!activeDrinkModal) return null;
+
+    const sizeRule =
+      sizeMatrix.find((s) => s.size === selectedModalSize) ||
+      DEFAULT_SIZE_MATRIX[2];
+
+    if (activeDrinkModal.category === "Retail") {
+      const unitPrice = activeDrinkModal.basePrice;
+      const qty = Math.max(1, retailQuantity);
+      return {
+        baseSizePrice: unitPrice,
+        sizeRule,
+        modifiersUpcharge: 0,
+        totalPrice: unitPrice * qty,
+      };
+    }
+
+    if (activeDrinkModal.category === "Food") {
+      const baseFoodPrice = activeDrinkModal.basePrice;
+      let foodModsUpcharge = 0;
+      selectedModalMods.forEach((modName) => {
+        const group = foodModifierGroups.find((g) =>
+          g.options.includes(modName)
+        );
+        if (group) {
+          foodModsUpcharge += group.upchargePrice;
+        }
+      });
+      return {
+        baseSizePrice: baseFoodPrice,
+        sizeRule,
+        modifiersUpcharge: foodModsUpcharge,
+        totalPrice: baseFoodPrice + foodModsUpcharge,
+      };
+    }
+
+    if (activeDrinkModal.category === "Supplies") {
+      return {
+        baseSizePrice: activeDrinkModal.basePrice,
+        sizeRule,
+        modifiersUpcharge: 0,
+        totalPrice: 0,
+      };
+    }
 
     const matchedVar = activeDrinkModal.variations.find(
       (v) => v.size.toLowerCase() === selectedModalSize.toLowerCase()
@@ -387,9 +781,6 @@ export default function OnboardingRulesStepPage() {
     const fallbackPrice =
       activeDrinkModal.basePrice + Math.max(0, sizeIndex - 2) * 0.5;
     const baseSizePrice = matchedVar ? matchedVar.price : fallbackPrice;
-
-    const sizeRule =
-      sizeMatrix.find((s) => s.size === selectedModalSize) || DEFAULT_SIZE_MATRIX[2];
 
     let modifiersUpcharge = extraShotsCount * modifierPricing.extraShotDollars;
     selectedModalMods.forEach((modName) => {
@@ -412,9 +803,11 @@ export default function OnboardingRulesStepPage() {
     selectedModalSize,
     sizeMatrix,
     extraShotsCount,
+    retailQuantity,
     modifierPricing,
     selectedModalMods,
     deduplicatedModifierGroups,
+    foodModifierGroups,
   ]);
 
   // Save Rules & Continue to Step 3: POS Connect
@@ -1388,7 +1781,7 @@ export default function OnboardingRulesStepPage() {
         </section>
       </main>
 
-      {/* Modifier Pop-Out Sheet Modal */}
+      {/* Item Detail & Context-Aware Modifier Modal */}
       {activeDrinkModal && activeModalComputation && (
         <div
           role="dialog"
@@ -1401,16 +1794,59 @@ export default function OnboardingRulesStepPage() {
             className="bg-slate-900 border border-slate-700 rounded-2xl max-w-3xl w-full max-h-[88vh] flex flex-col shadow-2xl overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
+            {/* Modal Header with Interactive Category Re-assignment Dropdown */}
             <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-4">
               <div>
-                <div className="flex items-center space-x-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">
-                    {posMode === "square" ? "Square Register" : "Clover POS"} Modifier Sheet
+                    {posMode === "square" ? "Square Register" : "Clover POS"}{" "}
+                    {activeDrinkModal.category === "Retail"
+                      ? "Retail Tile"
+                      : activeDrinkModal.category === "Food"
+                      ? "Food Item Sheet"
+                      : "Modifier Sheet"}
                   </span>
-                  <span className="text-xs font-mono text-slate-400">
-                    {activeDrinkModal.category}
-                  </span>
+
+                  <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-700 hover:border-amber-500/60 rounded-lg px-2.5 py-1 transition">
+                    <label
+                      htmlFor="modal-item-category-select"
+                      className="text-[10px] font-mono uppercase text-slate-400"
+                    >
+                      Category:
+                    </label>
+                    <select
+                      id="modal-item-category-select"
+                      aria-label="Reassign item category"
+                      value={activeDrinkModal.category}
+                      onChange={(e) =>
+                        handleModalCategoryChange(
+                          activeDrinkModal.id,
+                          e.target.value as ModalAssignableCategory
+                        )
+                      }
+                      className="bg-slate-900 text-xs font-mono font-bold text-amber-400 focus:outline-none cursor-pointer"
+                    >
+                      {MODAL_CATEGORY_OPTIONS.map((catOpt) => (
+                        <option
+                          key={catOpt}
+                          value={catOpt}
+                          className="bg-slate-900 text-slate-100"
+                        >
+                          {catOpt}
+                        </option>
+                      ))}
+                      {!MODAL_CATEGORY_OPTIONS.includes(
+                        activeDrinkModal.category as ModalAssignableCategory
+                      ) && (
+                        <option
+                          value={activeDrinkModal.category}
+                          className="bg-slate-900 text-slate-100"
+                        >
+                          {activeDrinkModal.category}
+                        </option>
+                      )}
+                    </select>
+                  </div>
                 </div>
                 <h3 className="text-lg font-extrabold text-white mt-1">
                   {activeDrinkModal.name}
@@ -1428,136 +1864,325 @@ export default function OnboardingRulesStepPage() {
 
             {/* Modal Scrollable Body */}
             <div className="p-6 overflow-y-auto space-y-6">
-              {/* Cup Size & Recipe Bar */}
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono uppercase text-slate-400">
-                    1. Select Cup Size &amp; Auto-Applied Recipe
-                  </span>
-                  <span className="text-xs font-mono text-amber-400">
-                    Recipe: {activeModalComputation.sizeRule.defaultShots} Shots &middot;{" "}
-                    {activeModalComputation.sizeRule.defaultSyrupPumps} Syrup Pumps
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-                  {sizeMatrix
-                    .filter((s) => s.enabled)
-                    .map((s) => {
-                      const isSelected = selectedModalSize === s.size;
-                      return (
-                        <button
-                          key={s.size}
-                          type="button"
-                          onClick={() => setSelectedModalSize(s.size)}
-                          className={`p-2.5 rounded-xl border text-center transition cursor-pointer ${
-                            isSelected
-                              ? "bg-amber-500 text-slate-950 border-amber-400 font-bold"
-                              : "bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-600"
-                          }`}
-                        >
-                          <div className="text-xs font-mono font-bold">{s.size}</div>
-                          <div className="text-[10px] font-mono opacity-80 mt-0.5">
-                            {s.defaultShots}sh / {s.defaultSyrupPumps}p
-                          </div>
-                        </button>
-                      );
-                    })}
-                </div>
-              </div>
-
-              {/* Extra Espresso Shots Counter */}
-              <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <span className="text-xs font-bold text-white">
-                    Extra Espresso Shots (+${modifierPricing.extraShotDollars.toFixed(2)}/ea)
-                  </span>
-                  <p className="text-[11px] text-slate-400">
-                    Base {selectedModalSize} includes{" "}
-                    {activeModalComputation.sizeRule.defaultShots} standard shots.
-                  </p>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExtraShotsCount((c) => Math.max(0, c - 1))
-                    }
-                    className="h-8 w-8 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono font-bold cursor-pointer"
-                  >
-                    -
-                  </button>
-                  <span className="text-sm font-mono font-bold text-amber-400 w-6 text-center">
-                    +{extraShotsCount}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setExtraShotsCount((c) => c + 1)}
-                    className="h-8 w-8 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono font-bold cursor-pointer"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-
-              {/* Deduplicated Modifier Groups (Dairy Options, Syrups, Energy & Boosters, Sauces) */}
-              <div className="space-y-5">
-                {deduplicatedModifierGroups.map((group) => (
-                  <div key={group.groupLabel} className="space-y-2.5">
-                    <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
-                      <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-                        {group.groupLabel}
-                      </span>
-                      <span className="text-xs font-mono text-amber-400">
-                        +${group.upchargePrice.toFixed(2)}
-                      </span>
+              {activeDrinkModal.category === "Retail" ? (
+                /* RETAIL VIEW: Clean retail tile modal with item name, retail price, and quantity selector only */
+                <div className="space-y-4">
+                  <div className="bg-slate-950/90 border border-emerald-500/40 rounded-2xl p-5 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+                      <div>
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-emerald-400">
+                          Packaged / Retail SKU
+                        </span>
+                        <h4 className="text-base font-extrabold text-white mt-0.5">
+                          {activeDrinkModal.name}
+                        </h4>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[10px] font-mono uppercase text-slate-400 block">
+                          Unit Retail Price
+                        </span>
+                        <span className="text-xl font-mono font-black text-emerald-400">
+                          ${activeDrinkModal.basePrice.toFixed(2)}
+                        </span>
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {group.options.map((optName) => {
-                        const isPicked = selectedModalMods.includes(optName);
-                        return (
-                          <button
-                            key={optName}
-                            type="button"
-                            onClick={() => toggleModalModifier(optName)}
-                            className={`px-3 py-2 rounded-xl border text-left text-xs flex items-center justify-between transition cursor-pointer ${
-                              isPicked
-                                ? "bg-amber-500/20 border-amber-400 text-amber-200 font-bold"
-                                : "bg-slate-950/70 border-slate-800 text-slate-300 hover:border-slate-700"
-                            }`}
-                          >
-                            <span className="truncate pr-2">{optName}</span>
-                            <span className="text-[10px] font-mono text-amber-400 shrink-0">
-                              {isPicked
-                                ? "✓"
-                                : `+$${group.upchargePrice.toFixed(2)}`}
-                            </span>
-                          </button>
-                        );
-                      })}
+                    <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
+                      <div>
+                        <span className="text-xs font-bold text-white">
+                          Quantity Selector
+                        </span>
+                        <p className="text-[11px] text-slate-400">
+                          Beverage cup sizes, espresso shots, dairy, and syrup modifiers are omitted for retail items.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center space-x-3">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRetailQuantity((q) => Math.max(1, q - 1))
+                          }
+                          aria-label="Decrease retail quantity"
+                          className="h-9 w-9 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-white font-mono font-bold cursor-pointer"
+                        >
+                          -
+                        </button>
+                        <span className="text-base font-mono font-black text-emerald-400 w-8 text-center">
+                          {retailQuantity}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setRetailQuantity((q) => q + 1)}
+                          aria-label="Increase retail quantity"
+                          className="h-9 w-9 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-white font-mono font-bold cursor-pointer"
+                        >
+                          +
+                        </button>
+                      </div>
                     </div>
                   </div>
-                ))}
-              </div>
+                </div>
+              ) : activeDrinkModal.category === "Food" ? (
+                /* FOOD VIEW: Strip all drink sizes/shots/dairy/syrups; show food modifiers if present, otherwise clean item summary */
+                <div className="space-y-5">
+                  <div className="bg-slate-950/90 border border-purple-500/40 rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-purple-400">
+                        Food &amp; Bakery Item Summary
+                      </span>
+                      <h4 className="text-base font-extrabold text-white mt-0.5">
+                        {activeDrinkModal.name}
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Cup sizes, espresso shot recipes, dairy options, and beverage syrups are stripped for food items.
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-mono uppercase text-slate-400 block">
+                        Item Price
+                      </span>
+                      <span className="text-xl font-mono font-black text-purple-300">
+                        ${activeDrinkModal.basePrice.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {foodModifierGroups.length > 0 && (
+                    <div className="space-y-4">
+                      {foodModifierGroups.map((group) => (
+                        <div key={group.groupLabel} className="space-y-2.5">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                            <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+                              {group.groupLabel}
+                            </span>
+                            <span className="text-xs font-mono text-amber-400">
+                              +${group.upchargePrice.toFixed(2)}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                            {group.options.map((optName) => {
+                              const isPicked =
+                                selectedModalMods.includes(optName);
+                              return (
+                                <button
+                                  key={optName}
+                                  type="button"
+                                  onClick={() => toggleModalModifier(optName)}
+                                  className={`px-3 py-2 rounded-xl border text-left text-xs flex items-center justify-between transition cursor-pointer ${
+                                    isPicked
+                                      ? "bg-amber-500/20 border-amber-400 text-amber-200 font-bold"
+                                      : "bg-slate-950/70 border-slate-800 text-slate-300 hover:border-slate-700"
+                                  }`}
+                                >
+                                  <span className="truncate pr-2">
+                                    {optName}
+                                  </span>
+                                  <span className="text-[10px] font-mono text-amber-400 shrink-0">
+                                    {isPicked
+                                      ? "✓"
+                                      : `+$${group.upchargePrice.toFixed(2)}`}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : activeDrinkModal.category === "Supplies" ? (
+                /* SUPPLIES VIEW: Operational backroom supply notice */
+                <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-5 space-y-2">
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400">
+                    Operational Supply (Excluded from POS Grid)
+                  </span>
+                  <h4 className="text-base font-extrabold text-white">
+                    {activeDrinkModal.name}
+                  </h4>
+                  <p className="text-xs text-slate-400">
+                    This item has been relocated to Filtered Supplies and removed from the active customer register layout. Use the Category dropdown above if you wish to restore it to Beverages, Food, or Retail.
+                  </p>
+                </div>
+              ) : (
+                /* BEVERAGES VIEW: Full Cup Size & Recipe Bar, Extra Shots, and Beverage Modifier Groups */
+                <>
+                  {/* Cup Size & Recipe Bar */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono uppercase text-slate-400">
+                        1. Select Cup Size &amp; Auto-Applied Recipe
+                      </span>
+                      <span className="text-xs font-mono text-amber-400">
+                        Recipe: {activeModalComputation.sizeRule.defaultShots} Shots &middot;{" "}
+                        {activeModalComputation.sizeRule.defaultSyrupPumps} Syrup Pumps
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                      {sizeMatrix
+                        .filter((s) => s.enabled)
+                        .map((s) => {
+                          const isSelected = selectedModalSize === s.size;
+                          return (
+                            <button
+                              key={s.size}
+                              type="button"
+                              onClick={() => setSelectedModalSize(s.size)}
+                              className={`p-2.5 rounded-xl border text-center transition cursor-pointer ${
+                                isSelected
+                                  ? "bg-amber-500 text-slate-950 border-amber-400 font-bold"
+                                  : "bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-600"
+                              }`}
+                            >
+                              <div className="text-xs font-mono font-bold">{s.size}</div>
+                              <div className="text-[10px] font-mono opacity-80 mt-0.5">
+                                {s.defaultShots}sh / {s.defaultSyrupPumps}p
+                              </div>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
+
+                  {/* Extra Espresso Shots Counter */}
+                  <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <span className="text-xs font-bold text-white">
+                        Extra Espresso Shots (+${modifierPricing.extraShotDollars.toFixed(2)}/ea)
+                      </span>
+                      <p className="text-[11px] text-slate-400">
+                        Base {selectedModalSize} includes{" "}
+                        {activeModalComputation.sizeRule.defaultShots} standard shots.
+                      </p>
+                    </div>
+                    <div className="flex items-center space-x-3">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExtraShotsCount((c) => Math.max(0, c - 1))
+                        }
+                        className="h-8 w-8 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono font-bold cursor-pointer"
+                      >
+                        -
+                      </button>
+                      <span className="text-sm font-mono font-bold text-amber-400 w-6 text-center">
+                        +{extraShotsCount}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setExtraShotsCount((c) => c + 1)}
+                        className="h-8 w-8 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono font-bold cursor-pointer"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Deduplicated Modifier Groups (Dairy Options, Syrups, Energy & Boosters, Sauces) */}
+                  <div className="space-y-5">
+                    {deduplicatedModifierGroups.map((group) => (
+                      <div key={group.groupLabel} className="space-y-2.5">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                          <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+                            {group.groupLabel}
+                          </span>
+                          <span className="text-xs font-mono text-amber-400">
+                            +${group.upchargePrice.toFixed(2)}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                          {group.options.map((optName) => {
+                            const isPicked = selectedModalMods.includes(optName);
+                            return (
+                              <button
+                                key={optName}
+                                type="button"
+                                onClick={() => toggleModalModifier(optName)}
+                                className={`px-3 py-2 rounded-xl border text-left text-xs flex items-center justify-between transition cursor-pointer ${
+                                  isPicked
+                                    ? "bg-amber-500/20 border-amber-400 text-amber-200 font-bold"
+                                    : "bg-slate-950/70 border-slate-800 text-slate-300 hover:border-slate-700"
+                                }`}
+                              >
+                                <span className="truncate pr-2">{optName}</span>
+                                <span className="text-[10px] font-mono text-amber-400 shrink-0">
+                                  {isPicked
+                                    ? "✓"
+                                    : `+$${group.upchargePrice.toFixed(2)}`}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Modal Footer Ticket Summary */}
             <div className="px-6 py-4 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between gap-4">
               <div className="text-xs font-mono text-slate-400">
-                <span>
-                  Base ({selectedModalSize}):{" "}
-                  <strong className="text-white">
-                    ${activeModalComputation.baseSizePrice.toFixed(2)}
-                  </strong>
-                </span>
-                <span className="mx-2">+</span>
-                <span>
-                  Modifiers:{" "}
-                  <strong className="text-amber-400">
-                    ${activeModalComputation.modifiersUpcharge.toFixed(2)}
-                  </strong>
-                </span>
+                {activeDrinkModal.category === "Retail" ? (
+                  <>
+                    <span>
+                      Unit Price:{" "}
+                      <strong className="text-white">
+                        ${activeModalComputation.baseSizePrice.toFixed(2)}
+                      </strong>
+                    </span>
+                    <span className="mx-2">&times;</span>
+                    <span>
+                      Qty:{" "}
+                      <strong className="text-emerald-400">
+                        {retailQuantity}
+                      </strong>
+                    </span>
+                  </>
+                ) : activeDrinkModal.category === "Food" ? (
+                  <>
+                    <span>
+                      Food Item:{" "}
+                      <strong className="text-white">
+                        ${activeModalComputation.baseSizePrice.toFixed(2)}
+                      </strong>
+                    </span>
+                    {activeModalComputation.modifiersUpcharge > 0 && (
+                      <>
+                        <span className="mx-2">+</span>
+                        <span>
+                          Add-Ons:{" "}
+                          <strong className="text-amber-400">
+                            ${activeModalComputation.modifiersUpcharge.toFixed(2)}
+                          </strong>
+                        </span>
+                      </>
+                    )}
+                  </>
+                ) : activeDrinkModal.category === "Supplies" ? (
+                  <span>Excluded Backroom Supply</span>
+                ) : (
+                  <>
+                    <span>
+                      Base ({selectedModalSize}):{" "}
+                      <strong className="text-white">
+                        ${activeModalComputation.baseSizePrice.toFixed(2)}
+                      </strong>
+                    </span>
+                    <span className="mx-2">+</span>
+                    <span>
+                      Modifiers:{" "}
+                      <strong className="text-amber-400">
+                        ${activeModalComputation.modifiersUpcharge.toFixed(2)}
+                      </strong>
+                    </span>
+                  </>
+                )}
               </div>
 
               <div className="flex items-center space-x-3">
