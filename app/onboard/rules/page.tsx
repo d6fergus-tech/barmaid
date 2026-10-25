@@ -102,12 +102,42 @@ export interface ModifierPricingRules {
   syrupSauceAddOnDollars: number;
 }
 
+export type PersistedTileColor =
+  | "amber"
+  | "cyan"
+  | "emerald"
+  | "slate"
+  | "blank";
+
+export interface PersistedGridTile {
+  id: number;
+  label: string;
+  price: string;
+  color: PersistedTileColor;
+}
+
+export interface PersistedAuditMetrics {
+  healthScore: number;
+  frictionLabel: string;
+  averageBaristaTaps: number;
+  targetMet: boolean;
+}
+
+export interface PersistedPreOptimizeSnapshot {
+  pages: PersistedGridTile[][];
+  metrics: PersistedAuditMetrics;
+  capturedAt: string;
+}
+
 export interface BusinessRulesConfig {
   merchant_slug: string;
   sizeMatrix: CupSizeRule[];
   modifierPricing: ModifierPricingRules;
   preferredPosPreview: "square" | "clover";
   savedAt: string;
+  isOptimized?: boolean;
+  optimizedGridPages?: PersistedGridTile[][];
+  preOptimizeSnapshot?: PersistedPreOptimizeSnapshot | null;
 }
 
 interface PreviewCatalogItem {

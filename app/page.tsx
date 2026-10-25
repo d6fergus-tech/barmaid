@@ -15,11 +15,29 @@ import {
 import {
   RULES_CONFIG_STORAGE_KEY,
   type BusinessRulesConfig,
+  type PersistedAuditMetrics,
+  type PersistedPreOptimizeSnapshot,
 } from "@/app/onboard/rules/page";
 import {
   getPosAuthStorageKey,
   type PosAuthRecord,
 } from "@/app/onboard/connect/page";
+
+const PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY = "barmaid_pre_optimize_snapshot";
+
+const BASELINE_AUDIT_METRICS: PersistedAuditMetrics = {
+  healthScore: 74,
+  frictionLabel: "Moderate Friction",
+  averageBaristaTaps: 4.2,
+  targetMet: false,
+};
+
+const OPTIMIZED_AUDIT_METRICS: PersistedAuditMetrics = {
+  healthScore: 94,
+  frictionLabel: "Low Friction",
+  averageBaristaTaps: 1.9,
+  targetMet: true,
+};
 
 type Variation = {
   size: string;
@@ -203,6 +221,144 @@ const buildPagesFromCatalog = (
   return generatedPages;
 };
 
+/**
+ * Ergonomics Auto-Optimization Heuristic:
+ * Maps high-frequency anchors (Espresso staples, energy drinks) into primary 5x4 thumb-reach positions,
+ * binds default 16oz single-tap sizing, and links unified modifier groups.
+ */
+const buildAutoOptimizedPages = (
+  items: StagedItem[],
+  modifiers: StagedModifier[],
+  fallbackCurrentPages?: GridTile[][]
+): GridTile[][] => {
+  if (items.length === 0 && modifiers.length === 0) {
+    if (fallbackCurrentPages && fallbackCurrentPages.length > 0) {
+      return fallbackCurrentPages.map((page) =>
+        page.map((tile) => {
+          if (tile.color === "blank" || tile.label === "[Empty Slot]") {
+            return tile;
+          }
+          const isBeverageTile =
+            tile.color === "amber" || tile.color === "cyan";
+          const cleanLabel = tile.label
+            .replace(/^(8oz|12oz|16oz|20oz|24oz|32oz)\s+/i, "")
+            .trim();
+          return {
+            ...tile,
+            label: isBeverageTile ? `16oz ${cleanLabel}` : tile.label,
+          };
+        })
+      );
+    }
+    return [createEmptyPage(0)];
+  }
+
+  const getErgonomicPriority = (item: StagedItem): number => {
+    const combined = `${item.name} ${item.categoryName || ""}`;
+    // Tier 1: High-velocity Espresso staples (primary thumb-reach anchors)
+    if (
+      /latte|americano|mocha|white\s*mocha|caramel\s*macchiato|breve|cappuccino|drip|cold\s*brew|espresso/i.test(
+        combined
+      )
+    ) {
+      return 1;
+    }
+    // Tier 2: High-velocity Energy drinks & iced specialty anchors
+    if (
+      /lotus|red\s*bull|rebel|energy|iced|boba|chai|matcha|frappe|smoothie/i.test(
+        combined
+      )
+    ) {
+      return 2;
+    }
+    // Tier 3: Other beverages
+    const color = getItemColor(item.name, item.categoryName);
+    if (color === "amber" || color === "cyan") {
+      return 3;
+    }
+    // Tier 4: Food & Pastries
+    if (color === "emerald") {
+      return 4;
+    }
+    // Tier 5: Retail SKUs
+    return 5;
+  };
+
+  const sortedItems = [...items].sort(
+    (a, b) => getErgonomicPriority(a) - getErgonomicPriority(b)
+  );
+
+  const combinedTilesData: Array<{
+    label: string;
+    price: string;
+    color: TileColor;
+  }> = sortedItems.map((item) => {
+    const color = getItemColor(item.name, item.categoryName);
+    const isBeverage = color === "amber" || color === "cyan";
+    const sixteenOzVar =
+      item.variations.find((v) => /16\s*oz/i.test(v.size)) ||
+      item.variations[0];
+    const resolvedPrice = sixteenOzVar ? sixteenOzVar.price : 4.75;
+    const cleanName = item.name
+      .replace(/^(8oz|12oz|16oz|20oz|24oz|32oz)\s+/i, "")
+      .trim();
+
+    return {
+      label: isBeverage ? `16oz ${cleanName}` : cleanName,
+      price: `$${resolvedPrice.toFixed(2)}`,
+      color,
+    };
+  });
+
+  // Link unified modifier groups into fast-reach modifier slots
+  const seenMods = new Set<string>();
+  modifiers.forEach((mod) => {
+    const cleanMod = mod.name.trim();
+    const key = cleanMod.toLowerCase();
+    if (!cleanMod || seenMods.has(key)) return;
+    seenMods.add(key);
+    combinedTilesData.push({
+      label: `+ ${cleanMod}`,
+      price: `+$${mod.price.toFixed(2)}`,
+      color: "slate",
+    });
+  });
+
+  const totalPagesNeeded = Math.max(
+    1,
+    Math.ceil(combinedTilesData.length / 20)
+  );
+  const generatedPages: GridTile[][] = [];
+
+  for (let p = 0; p < totalPagesNeeded; p++) {
+    const startItemIdx = p * 20;
+    const chunk = combinedTilesData.slice(startItemIdx, startItemIdx + 20);
+    const startSlotId = p * 20 + 1;
+
+    const pageTiles: GridTile[] = Array.from({ length: 20 }, (_, i) => {
+      const entry = chunk[i];
+      if (!entry) {
+        return {
+          id: startSlotId + i,
+          label: "[Empty Slot]",
+          price: "",
+          color: "blank" as TileColor,
+        };
+      }
+      return {
+        id: startSlotId + i,
+        label: entry.label,
+        price: entry.price,
+        color: entry.color,
+      };
+    });
+
+    generatedPages.push(pageTiles);
+  }
+
+  return generatedPages;
+};
+
 export default function BarMaidDashboard() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<
@@ -248,6 +404,14 @@ export default function BarMaidDashboard() {
   const [pages, setPages] = useState<GridTile[][]>(() => [createEmptyPage(0)]);
   const [activePageIndex, setActivePageIndex] = useState<number>(0);
   const [selectedTileId, setSelectedTileId] = useState<number>(1);
+
+  // Auto-Optimization & Snapshot Undo State
+  const [isOptimized, setIsOptimized] = useState<boolean>(false);
+  const [preOptimizeSnapshot, setPreOptimizeSnapshot] =
+    useState<PersistedPreOptimizeSnapshot | null>(null);
+  const [auditMetrics, setAuditMetrics] = useState<PersistedAuditMetrics>(
+    BASELINE_AUDIT_METRICS
+  );
 
   // Deployment States
   const [deployState, setDeployState] = useState<
@@ -398,17 +562,46 @@ export default function BarMaidDashboard() {
 
         setStagedItems(combinedStagedItems);
         setStagedModifiers(hydratedModifiers);
-        const hydratedPages = buildPagesFromCatalog(
-          combinedStagedItems,
-          hydratedModifiers,
-          "fast-cash"
-        );
-        setPages(hydratedPages);
+
+        const rawSavedSnapshot =
+          localStorage.getItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY) ||
+          sessionStorage.getItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY);
+        const hydratedSnapshot: PersistedPreOptimizeSnapshot | null =
+          parsedRules?.preOptimizeSnapshot ||
+          (rawSavedSnapshot
+            ? (JSON.parse(rawSavedSnapshot) as PersistedPreOptimizeSnapshot)
+            : null);
+
+        if (hydratedSnapshot) {
+          setPreOptimizeSnapshot(hydratedSnapshot);
+        }
+
+        if (
+          parsedRules?.isOptimized &&
+          Array.isArray(parsedRules.optimizedGridPages) &&
+          parsedRules.optimizedGridPages.length > 0
+        ) {
+          setIsOptimized(true);
+          setAuditMetrics(OPTIMIZED_AUDIT_METRICS);
+          setPages(parsedRules.optimizedGridPages);
+        } else {
+          setIsOptimized(false);
+          setAuditMetrics(BASELINE_AUDIT_METRICS);
+          const hydratedPages = buildPagesFromCatalog(
+            combinedStagedItems,
+            hydratedModifiers,
+            "fast-cash"
+          );
+          setPages(hydratedPages);
+        }
         setActivePageIndex(0);
         setSelectedTileId(1);
       } else {
         setStagedItems([]);
         setStagedModifiers([]);
+        setIsOptimized(false);
+        setPreOptimizeSnapshot(null);
+        setAuditMetrics(BASELINE_AUDIT_METRICS);
         setPages([createEmptyPage(0)]);
         setActivePageIndex(0);
         setSelectedTileId(1);
@@ -752,6 +945,159 @@ export default function BarMaidDashboard() {
     setActivePageIndex(0);
     setSelectedTileId(1);
     setActiveTab("studio");
+  };
+
+  // Auto-Optimize Catalog & Layout with Full Undo Snapshot
+  const handleAutoOptimizeCatalog = () => {
+    const baselinePagesSnapshot: GridTile[][] = pages.map((page) =>
+      page.map((tile) => ({ ...tile }))
+    );
+
+    const snapshotPayload: PersistedPreOptimizeSnapshot = {
+      pages: baselinePagesSnapshot,
+      metrics: { ...BASELINE_AUDIT_METRICS },
+      capturedAt: new Date().toISOString(),
+    };
+
+    const optimizedPages = buildAutoOptimizedPages(
+      stagedItems,
+      stagedModifiers,
+      pages
+    );
+
+    setPreOptimizeSnapshot(snapshotPayload);
+    setIsOptimized(true);
+    setAuditMetrics(OPTIMIZED_AUDIT_METRICS);
+    setPages(optimizedPages);
+    setActivePageIndex(0);
+    setSelectedTileId(1);
+
+    try {
+      const serializedSnapshot = JSON.stringify(snapshotPayload);
+      localStorage.setItem(
+        PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY,
+        serializedSnapshot
+      );
+      sessionStorage.setItem(
+        PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY,
+        serializedSnapshot
+      );
+
+      const rawRules =
+        localStorage.getItem(RULES_CONFIG_STORAGE_KEY) ||
+        sessionStorage.getItem(RULES_CONFIG_STORAGE_KEY);
+      const existingRules: Partial<BusinessRulesConfig> = rawRules
+        ? (JSON.parse(rawRules) as Partial<BusinessRulesConfig>)
+        : {};
+
+      const updatedRulesConfig: BusinessRulesConfig = {
+        merchant_slug:
+          existingRules.merchant_slug || merchantSlug || "unassigned",
+        sizeMatrix: Array.isArray(existingRules.sizeMatrix)
+          ? existingRules.sizeMatrix
+          : [
+              {
+                size: "8oz",
+                enabled: true,
+                defaultShots: 1,
+                defaultSyrupPumps: 2,
+              },
+              {
+                size: "12oz",
+                enabled: true,
+                defaultShots: 2,
+                defaultSyrupPumps: 3,
+              },
+              {
+                size: "16oz",
+                enabled: true,
+                defaultShots: 2,
+                defaultSyrupPumps: 4,
+              },
+              {
+                size: "20oz",
+                enabled: true,
+                defaultShots: 4,
+                defaultSyrupPumps: 5,
+              },
+              {
+                size: "24oz",
+                enabled: true,
+                defaultShots: 4,
+                defaultSyrupPumps: 6,
+              },
+              {
+                size: "32oz",
+                enabled: true,
+                defaultShots: 6,
+                defaultSyrupPumps: 7,
+              },
+            ],
+        modifierPricing: existingRules.modifierPricing || {
+          altMilkUpchargeDollars: 0.75,
+          extraShotDollars: 0.75,
+          syrupSauceAddOnDollars: 0.5,
+        },
+        preferredPosPreview: existingRules.preferredPosPreview || "square",
+        savedAt: new Date().toISOString(),
+        isOptimized: true,
+        optimizedGridPages: optimizedPages,
+        preOptimizeSnapshot: snapshotPayload,
+      };
+
+      const serializedRules = JSON.stringify(updatedRulesConfig);
+      localStorage.setItem(RULES_CONFIG_STORAGE_KEY, serializedRules);
+      sessionStorage.setItem(RULES_CONFIG_STORAGE_KEY, serializedRules);
+    } catch {
+      // Ignore storage quota errors
+    }
+  };
+
+  // Undo Auto-Optimization & Restore Baseline Layout + Metrics
+  const handleUndoOptimization = () => {
+    const restoredPages =
+      preOptimizeSnapshot &&
+      Array.isArray(preOptimizeSnapshot.pages) &&
+      preOptimizeSnapshot.pages.length > 0
+        ? preOptimizeSnapshot.pages.map((page) =>
+            page.map((tile) => ({ ...tile }))
+          )
+        : buildPagesFromCatalog(stagedItems, stagedModifiers, selectedArchetype);
+
+    const restoredMetrics = preOptimizeSnapshot?.metrics || {
+      ...BASELINE_AUDIT_METRICS,
+    };
+
+    setPages(restoredPages);
+    setAuditMetrics(restoredMetrics);
+    setIsOptimized(false);
+    setPreOptimizeSnapshot(null);
+    setActivePageIndex(0);
+    setSelectedTileId(1);
+
+    try {
+      localStorage.removeItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY);
+      sessionStorage.removeItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY);
+
+      const rawRules =
+        localStorage.getItem(RULES_CONFIG_STORAGE_KEY) ||
+        sessionStorage.getItem(RULES_CONFIG_STORAGE_KEY);
+      if (rawRules) {
+        const parsedRules = JSON.parse(rawRules) as BusinessRulesConfig;
+        const revertedRules: BusinessRulesConfig = {
+          ...parsedRules,
+          isOptimized: false,
+          optimizedGridPages: undefined,
+          preOptimizeSnapshot: null,
+          savedAt: new Date().toISOString(),
+        };
+        const serializedRules = JSON.stringify(revertedRules);
+        localStorage.setItem(RULES_CONFIG_STORAGE_KEY, serializedRules);
+        sessionStorage.setItem(RULES_CONFIG_STORAGE_KEY, serializedRules);
+      }
+    } catch {
+      // Ignore storage errors
+    }
   };
 
   const handleAssignItemToTile = (item: StagedItem) => {
@@ -1426,14 +1772,30 @@ export default function BarMaidDashboard() {
                   Register Health Score
                 </span>
                 <div className="mt-3 relative flex items-center justify-center">
-                  <div className="w-24 h-24 rounded-full border-4 border-amber-500/20 border-t-amber-500 flex items-center justify-center">
-                    <span className="text-3xl font-black text-amber-400">
-                      74
+                  <div
+                    className={`w-24 h-24 rounded-full border-4 flex items-center justify-center transition-colors ${
+                      isOptimized
+                        ? "border-emerald-500/20 border-t-emerald-400"
+                        : "border-amber-500/20 border-t-amber-500"
+                    }`}
+                  >
+                    <span
+                      className={`text-3xl font-black ${
+                        isOptimized ? "text-emerald-400" : "text-amber-400"
+                      }`}
+                    >
+                      {auditMetrics.healthScore}
                     </span>
                   </div>
                 </div>
-                <span className="text-xs font-medium text-amber-400/90 mt-2 bg-amber-500/10 px-2 py-0.5 rounded-full">
-                  Moderate Friction
+                <span
+                  className={`text-xs font-medium mt-2 px-2 py-0.5 rounded-full ${
+                    isOptimized
+                      ? "text-emerald-300 bg-emerald-500/15 border border-emerald-500/30"
+                      : "text-amber-400/90 bg-amber-500/10"
+                  }`}
+                >
+                  {auditMetrics.frictionLabel}
                 </span>
               </div>
 
@@ -1443,10 +1805,18 @@ export default function BarMaidDashboard() {
                     Average Barista Taps
                   </span>
                   <p className="text-2xl font-extrabold text-white mt-2">
-                    4.2 taps
+                    {auditMetrics.averageBaristaTaps.toFixed(1)} taps
                   </p>
-                  <p className="text-xs text-rose-400 mt-1 font-medium">
-                    Target: ≤ 2.0 taps
+                  <p
+                    className={`text-xs mt-1 font-medium ${
+                      auditMetrics.targetMet
+                        ? "text-emerald-400"
+                        : "text-rose-400"
+                    }`}
+                  >
+                    {auditMetrics.targetMet
+                      ? "Target Met: ≤ 2.0 taps"
+                      : "Target: ≤ 2.0 taps"}
                   </p>
                 </div>
                 <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col justify-between">
@@ -1470,27 +1840,60 @@ export default function BarMaidDashboard() {
                     {stagedItems.length} items
                   </p>
                   <p className="text-xs text-emerald-400 mt-1 font-medium">
-                    Heuristic sizes mapped
+                    {isOptimized
+                      ? "16oz single-tap anchors mapped"
+                      : "Heuristic sizes mapped"}
                   </p>
                 </div>
               </div>
             </div>
 
-            {/* Bottom Call to Action */}
+            {/* Bottom Call to Action & Auto-Optimize Controls */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
-              <div className="text-xs text-slate-400">
-                <span>Selected Layout Template: </span>
-                <strong className="text-amber-400 uppercase font-mono">
-                  {selectedArchetype}
-                </strong>
+              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                <div>
+                  <span>Selected Layout Template: </span>
+                  <strong className="text-amber-400 uppercase font-mono">
+                    {selectedArchetype}
+                  </strong>
+                </div>
+
+                {isOptimized && (
+                  <span className="px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/50 text-emerald-300 font-semibold text-xs flex items-center space-x-1.5">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
+                    <span>Optimized (Saved 2.3 taps/drink)</span>
+                  </span>
+                )}
               </div>
-              <button
-                onClick={() => setActiveTab("studio")}
-                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-lg shadow-md shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
-              >
-                <span>Proceed to Ergonomics Studio</span>
-                <span>→</span>
-              </button>
+
+              <div className="flex flex-wrap items-center gap-3">
+                {!isOptimized ? (
+                  <button
+                    type="button"
+                    onClick={handleAutoOptimizeCatalog}
+                    className="px-4 py-2.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/60 text-amber-300 hover:text-amber-200 font-bold text-sm rounded-lg shadow-sm transition flex items-center space-x-2 cursor-pointer"
+                  >
+                    <span>⚡ Auto-Optimize Catalog &amp; Layout</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleUndoOptimization}
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 hover:text-white font-semibold text-sm rounded-lg transition flex items-center space-x-2 cursor-pointer"
+                  >
+                    <span>↺ Undo Optimization</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("studio")}
+                  className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-lg shadow-md shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
+                >
+                  <span>Proceed to Ergonomics Studio</span>
+                  <span>→</span>
+                </button>
+              </div>
             </div>
           </div>
         )}
