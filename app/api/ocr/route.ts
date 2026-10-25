@@ -36,7 +36,9 @@ Extract:
 - tradeName: Explicit DBA / Trade name if listed on the license (e.g., "Highway Espresso"). If the license does NOT explicitly state a separate DBA or Trade Name, return "" (empty string) rather than repeating the legal entity name.
 - dbaName: Same as tradeName for backwards compatibility
 - hasExplicitTradeName: true ONLY if the license explicitly specifies a DBA / Trade Name / Doing Business As distinct from the legal entity name, otherwise false
-- address: Street address
+- physicalAddress: Physical stand / premises / "Ship To" / location address if present, or null
+- mailingAddress: Mailing / corporate office / PO Box / "Bill To" address if present, or null
+- address: Fallback single street/full address if only one address block exists (or the physical address)
 - city: City name
 - state: 2-letter state code (e.g., "WA")
 - zip: Postal ZIP code
@@ -52,7 +54,9 @@ Return strictly valid JSON matching the schema.
           tradeName: { type: Type.STRING },
           dbaName: { type: Type.STRING },
           hasExplicitTradeName: { type: Type.BOOLEAN },
-          address: { type: Type.STRING },
+          physicalAddress: { type: Type.STRING, nullable: true },
+          mailingAddress: { type: Type.STRING, nullable: true },
+          address: { type: Type.STRING, nullable: true },
           city: { type: Type.STRING },
           state: { type: Type.STRING },
           zip: { type: Type.STRING },

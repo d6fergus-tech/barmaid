@@ -145,9 +145,38 @@ export default function BarMaidMasterDashboardPage() {
 
   const activeAddressLine = useMemo(() => {
     if (!stageData?.storeProfile) return "No physical address staged yet";
-    const { streetAddress, city, state, zipCode } = stageData.storeProfile;
-    const parts = [streetAddress, city, state, zipCode].filter(Boolean);
+    const {
+      address,
+      streetAddress,
+      physicalAddress,
+      mailingAddress,
+      selectedAddressType,
+      city,
+      state,
+      zipCode,
+    } = stageData.storeProfile;
+    const primaryStreet =
+      address ||
+      streetAddress ||
+      (selectedAddressType === "mailing" ? mailingAddress : physicalAddress) ||
+      physicalAddress ||
+      mailingAddress ||
+      "";
+    const tailParts = [city, state, zipCode].filter(
+      (part) => part && !primaryStreet.toLowerCase().includes(part.toLowerCase())
+    );
+    const parts = [primaryStreet, ...tailParts].filter(Boolean);
     return parts.length > 0 ? parts.join(", ") : "No physical address staged yet";
+  }, [stageData]);
+
+  const activeAddressTypeLabel = useMemo(() => {
+    if (!stageData?.storeProfile) return null;
+    const { physicalAddress, mailingAddress, selectedAddressType } =
+      stageData.storeProfile;
+    if (!physicalAddress && !mailingAddress) return null;
+    return selectedAddressType === "mailing"
+      ? "Mailing / Bill-To"
+      : "Physical / Ship-To";
   }, [stageData]);
 
   const drinksCount =
@@ -676,9 +705,14 @@ export default function BarMaidMasterDashboardPage() {
                         <strong className="text-slate-300">Legal Entity:</strong>{" "}
                         {activeLegal}
                       </span>
-                      <span>
+                      <span className="flex items-center gap-1.5">
                         <strong className="text-slate-300">Address:</strong>{" "}
-                        {activeAddressLine}
+                        <span>{activeAddressLine}</span>
+                        {activeAddressTypeLabel && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 text-amber-300 font-mono text-[10px]">
+                            {activeAddressTypeLabel}
+                          </span>
+                        )}
                       </span>
                     </div>
                   </div>
@@ -794,6 +828,12 @@ export default function BarMaidMasterDashboardPage() {
                           slug;
                         const legal =
                           session.storeProfile.legalName || "Unverified Entity";
+                        const sessionAddress =
+                          session.storeProfile.address ||
+                          session.storeProfile.streetAddress ||
+                          session.storeProfile.physicalAddress ||
+                          session.storeProfile.mailingAddress ||
+                          "";
                         const sessionPos = posMap[slug];
 
                         return (
@@ -814,6 +854,11 @@ export default function BarMaidMasterDashboardPage() {
                                 <p className="text-[11px] text-slate-400 mt-0.5">
                                   Legal: {legal}
                                 </p>
+                                {sessionAddress && (
+                                  <p className="text-[11px] text-slate-500 mt-0.5 truncate max-w-xs">
+                                    Addr: {sessionAddress}
+                                  </p>
+                                )}
                               </div>
 
                               <span

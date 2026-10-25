@@ -25,6 +25,9 @@ export interface InvoiceOperationalSupply {
 export interface InvoiceOcrResponse {
   vendorName: string;
   invoiceDate?: string;
+  physicalAddress?: string | null;
+  mailingAddress?: string | null;
+  address?: string | null;
   retailItems: InvoiceRetailItem[];
   modifierOptions: InvoiceModifierOption[];
   supplies: InvoiceOperationalSupply[];
@@ -33,6 +36,9 @@ export interface InvoiceOcrResponse {
 interface RawParsedInvoice {
   vendorName?: string;
   invoiceDate?: string;
+  physicalAddress?: string | null;
+  mailingAddress?: string | null;
+  address?: string | null;
   retailItems?: Array<{
     name?: string;
     unitCostCents?: number;
@@ -96,7 +102,12 @@ export async function POST(req: NextRequest) {
 You are an expert specialty coffee supply chain and POS catalog analyst for BarMaid.
 Analyze the provided coffee shop distributor invoice / packing slip image(s) (e.g., Dillanos Coffee Roasters, Torani, Big Train, DaVinci, Ghirardelli, Oatly, Sysco, US Foods).
 
-Extract the vendor name, invoice date (if visible), and classify all line items using these strict heuristics:
+Extract the vendor name, invoice date (if visible), customer delivery/billing addresses, and classify all line items using these strict heuristics:
+
+0. Customer Stand Addresses (Physical / Ship-To vs. Mailing / Bill-To):
+   - physicalAddress: Extract the customer's "Ship To", "Deliver To", delivery address, or physical coffee stand location address (exclude the distributor/vendor's own warehouse address). Return null if not present.
+   - mailingAddress: Extract the customer's "Bill To", "Sold To", corporate office, or PO Box mailing address (exclude the distributor/vendor's own remit-to address). Return null if not present.
+   - address: Fallback single customer address if only one customer address block exists on the document (or the physical/Ship-To address when both exist). Return null if no customer address is visible.
 
 1. Retail Products ('retail_item' -> place in retailItems):
    - Whole bean coffee bags for retail sale (12oz, 2lb, 5lb retail bags), RTD (Ready-to-Drink) cans/bottles, bottled water/sodas, and pre-packaged grab-and-go snacks/pastries.
@@ -127,6 +138,9 @@ Return strictly valid JSON matching the schema.
       properties: {
         vendorName: { type: Type.STRING },
         invoiceDate: { type: Type.STRING },
+        physicalAddress: { type: Type.STRING, nullable: true },
+        mailingAddress: { type: Type.STRING, nullable: true },
+        address: { type: Type.STRING, nullable: true },
         retailItems: {
           type: Type.ARRAY,
           items: {
@@ -200,9 +214,28 @@ Return strictly valid JSON matching the schema.
 
     const rawParsed = JSON.parse(response.text || "{}") as RawParsedInvoice;
 
+    const rawPhysical =
+      typeof rawParsed.physicalAddress === "string" &&
+      rawParsed.physicalAddress.trim().length > 0
+        ? rawParsed.physicalAddress.trim()
+        : null;
+    const rawMailing =
+      typeof rawParsed.mailingAddress === "string" &&
+      rawParsed.mailingAddress.trim().length > 0
+        ? rawParsed.mailingAddress.trim()
+        : null;
+    const rawFallbackAddress =
+      typeof rawParsed.address === "string" &&
+      rawParsed.address.trim().length > 0
+        ? rawParsed.address.trim()
+        : rawPhysical || rawMailing || null;
+
     const cleanResult: InvoiceOcrResponse = {
       vendorName: (rawParsed.vendorName || "Specialty Coffee Distributor").trim(),
       ...(rawParsed.invoiceDate ? { invoiceDate: rawParsed.invoiceDate.trim() } : {}),
+      physicalAddress: rawPhysical,
+      mailingAddress: rawMailing,
+      address: rawFallbackAddress,
       retailItems: (rawParsed.retailItems || [])
         .filter((item): item is NonNullable<typeof item> & { name: string } => Boolean(item?.name))
         .map((item) => ({

@@ -169,7 +169,11 @@ export default function OnboardingRulesStepPage() {
   const resolvedDba =
     storeProfile?.dbaName || storeProfile?.legalName || "Unassigned Merchant";
   const resolvedLegal = storeProfile?.legalName || resolvedDba;
-  const resolvedAddress = storeProfile?.streetAddress || "No Street Address Staged";
+  const resolvedAddress =
+    storeProfile?.address ||
+    storeProfile?.streetAddress ||
+    storeProfile?.physicalAddress ||
+    "No Street Address Staged";
   const resolvedCityStateZip =
     [storeProfile?.city, storeProfile?.state, storeProfile?.zipCode]
       .filter(Boolean)

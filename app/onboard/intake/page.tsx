@@ -52,10 +52,16 @@ interface UploadedAsset {
   errorMessage?: string;
 }
 
+export type AddressSelectionMode = "physical" | "mailing";
+
 export interface StoreProfileData {
   legalName: string;
   dbaName: string;
   merchantSlug: string;
+  physicalAddress?: string;
+  mailingAddress?: string;
+  address?: string;
+  selectedAddressType?: AddressSelectionMode;
   streetAddress: string;
   city: string;
   state: string;
@@ -165,15 +171,7 @@ export interface OnboardingSessionRulesSnapshot {
 export interface OnboardingSession {
   id: string;
   createdAt: string;
-  storeProfile: {
-    legalName: string;
-    dbaName: string;
-    merchantSlug: string;
-    streetAddress: string;
-    city: string;
-    state: string;
-    zipCode: string;
-  };
+  storeProfile: StoreProfileData;
   counts: {
     drinks: number;
     modifiers: number;
@@ -217,7 +215,9 @@ interface LicenseOcrApiResponse {
     tradeName?: string;
     dbaName?: string;
     hasExplicitTradeName?: boolean;
-    address?: string;
+    physicalAddress?: string | null;
+    mailingAddress?: string | null;
+    address?: string | null;
     streetAddress?: string;
     city?: string;
     state?: string;
@@ -241,11 +241,35 @@ const EMPTY_STORE_PROFILE: StoreProfileData = {
   legalName: "",
   dbaName: "",
   merchantSlug: "",
+  physicalAddress: "",
+  mailingAddress: "",
+  address: "",
+  selectedAddressType: "physical",
   streetAddress: "",
   city: "",
   state: "",
   zipCode: "",
 };
+
+function parseCityStateZipFromAddress(rawAddress: string): {
+  city?: string;
+  state?: string;
+  zip?: string;
+} {
+  if (!rawAddress) return {};
+  // Match "... , City, ST 98901" or "... City, WA 98901-1234"
+  const match = rawAddress.match(
+    /,\s*([A-Za-z .'-]+?)\s*,\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)\b/i
+  );
+  if (match) {
+    return {
+      city: match[1].trim(),
+      state: match[2].toUpperCase(),
+      zip: match[3].trim(),
+    };
+  }
+  return {};
+}
 
 export function toSlug(input: string): string {
   return input
@@ -444,11 +468,22 @@ export function upsertSessionInArchive(
     }
   }
 
+  const resolvedPrimaryAddress =
+    stage.storeProfile.address ||
+    stage.storeProfile.streetAddress ||
+    stage.storeProfile.physicalAddress ||
+    stage.storeProfile.mailingAddress ||
+    "";
+
   const normalizedProfile: StoreProfileData = {
     legalName: stage.storeProfile.legalName || "",
     dbaName: stage.storeProfile.dbaName || "",
     merchantSlug: uniqueSlug,
-    streetAddress: stage.storeProfile.streetAddress || "",
+    physicalAddress: stage.storeProfile.physicalAddress || "",
+    mailingAddress: stage.storeProfile.mailingAddress || "",
+    address: resolvedPrimaryAddress,
+    selectedAddressType: stage.storeProfile.selectedAddressType || "physical",
+    streetAddress: resolvedPrimaryAddress,
     city: stage.storeProfile.city || "",
     state: stage.storeProfile.state || "",
     zipCode: stage.storeProfile.zipCode || "",
@@ -704,6 +739,8 @@ export default function MultiSourceIntakeStagingPage() {
   const legalNameRef = useRef<HTMLInputElement>(null);
   const dbaNameRef = useRef<HTMLInputElement>(null);
   const slugRef = useRef<HTMLInputElement>(null);
+  const physicalAddressRef = useRef<HTMLInputElement>(null);
+  const mailingAddressRef = useRef<HTMLInputElement>(null);
   const addressRef = useRef<HTMLInputElement>(null);
   const cityRef = useRef<HTMLInputElement>(null);
   const stateRef = useRef<HTMLInputElement>(null);
@@ -715,6 +752,12 @@ export default function MultiSourceIntakeStagingPage() {
 
   const [activeSlugBadge, setActiveSlugBadge] = useState<string>("");
   const [activeDbaBadge, setActiveDbaBadge] = useState<string>("");
+  const [selectedAddressMode, setSelectedAddressMode] =
+    useState<AddressSelectionMode>("physical");
+  const [detectedPhysicalBadge, setDetectedPhysicalBadge] =
+    useState<string>("");
+  const [detectedMailingBadge, setDetectedMailingBadge] =
+    useState<string>("");
   const [licenseDetected, setLicenseDetected] = useState<boolean>(false);
 
   // Saved Client Sessions Archive ('barmaid_saved_sessions')
@@ -748,8 +791,27 @@ export default function MultiSourceIntakeStagingPage() {
     const rawSlug =
       slugRef.current?.value.trim() ?? storeProfileRef.current.merchantSlug;
     const merchantSlug = toSlug(rawSlug || dbaName || legalName);
-    const streetAddress =
-      addressRef.current?.value.trim() ?? storeProfileRef.current.streetAddress;
+    const physicalAddress =
+      physicalAddressRef.current?.value.trim() ??
+      storeProfileRef.current.physicalAddress ??
+      "";
+    const mailingAddress =
+      mailingAddressRef.current?.value.trim() ??
+      storeProfileRef.current.mailingAddress ??
+      "";
+    const activeAddressVal =
+      addressRef.current?.value.trim() ??
+      storeProfileRef.current.address ??
+      storeProfileRef.current.streetAddress ??
+      "";
+    const selectedType: AddressSelectionMode =
+      storeProfileRef.current.selectedAddressType || "physical";
+    const resolvedPrimaryAddress =
+      activeAddressVal ||
+      (selectedType === "mailing"
+        ? mailingAddress || physicalAddress
+        : physicalAddress || mailingAddress);
+
     const city = cityRef.current?.value.trim() ?? storeProfileRef.current.city;
     const state = stateRef.current?.value.trim() ?? storeProfileRef.current.state;
     const zipCode = zipRef.current?.value.trim() ?? storeProfileRef.current.zipCode;
@@ -758,7 +820,11 @@ export default function MultiSourceIntakeStagingPage() {
       legalName,
       dbaName,
       merchantSlug,
-      streetAddress,
+      physicalAddress,
+      mailingAddress,
+      address: resolvedPrimaryAddress,
+      selectedAddressType: selectedType,
+      streetAddress: resolvedPrimaryAddress,
       city,
       state,
       zipCode,
@@ -769,16 +835,45 @@ export default function MultiSourceIntakeStagingPage() {
 
   // Write values into uncontrolled DOM inputs
   const writeStoreProfileToInputs = useCallback((profile: StoreProfileData) => {
-    storeProfileRef.current = { ...profile };
-    if (legalNameRef.current) legalNameRef.current.value = profile.legalName || "";
-    if (dbaNameRef.current) dbaNameRef.current.value = profile.dbaName || "";
-    if (slugRef.current) slugRef.current.value = profile.merchantSlug || "";
-    if (addressRef.current) addressRef.current.value = profile.streetAddress || "";
-    if (cityRef.current) cityRef.current.value = profile.city || "";
-    if (stateRef.current) stateRef.current.value = profile.state || "";
-    if (zipRef.current) zipRef.current.value = profile.zipCode || "";
-    setActiveSlugBadge(profile.merchantSlug || "");
-    setActiveDbaBadge(profile.dbaName || profile.legalName || "");
+    const mode: AddressSelectionMode = profile.selectedAddressType || "physical";
+    const primaryAddr =
+      profile.address ||
+      profile.streetAddress ||
+      (mode === "mailing"
+        ? profile.mailingAddress || profile.physicalAddress || ""
+        : profile.physicalAddress || profile.mailingAddress || "");
+
+    const normalized: StoreProfileData = {
+      ...profile,
+      physicalAddress: profile.physicalAddress || "",
+      mailingAddress: profile.mailingAddress || "",
+      address: primaryAddr,
+      selectedAddressType: mode,
+      streetAddress: primaryAddr,
+    };
+
+    storeProfileRef.current = normalized;
+    if (legalNameRef.current)
+      legalNameRef.current.value = normalized.legalName || "";
+    if (dbaNameRef.current)
+      dbaNameRef.current.value = normalized.dbaName || "";
+    if (slugRef.current)
+      slugRef.current.value = normalized.merchantSlug || "";
+    if (physicalAddressRef.current)
+      physicalAddressRef.current.value = normalized.physicalAddress || "";
+    if (mailingAddressRef.current)
+      mailingAddressRef.current.value = normalized.mailingAddress || "";
+    if (addressRef.current)
+      addressRef.current.value = normalized.address || "";
+    if (cityRef.current) cityRef.current.value = normalized.city || "";
+    if (stateRef.current) stateRef.current.value = normalized.state || "";
+    if (zipRef.current) zipRef.current.value = normalized.zipCode || "";
+
+    setActiveSlugBadge(normalized.merchantSlug || "");
+    setActiveDbaBadge(normalized.dbaName || normalized.legalName || "");
+    setSelectedAddressMode(mode);
+    setDetectedPhysicalBadge(normalized.physicalAddress || "");
+    setDetectedMailingBadge(normalized.mailingAddress || "");
   }, []);
 
   // Build and persist canonical IntakeStageData to localStorage + auto-archive session
@@ -812,6 +907,9 @@ export default function MultiSourceIntakeStagingPage() {
         !profile.legalName &&
         !profile.dbaName &&
         !profile.merchantSlug &&
+        !profile.physicalAddress &&
+        !profile.mailingAddress &&
+        !profile.address &&
         !profile.streetAddress &&
         !profile.city &&
         !profile.state &&
@@ -896,6 +994,19 @@ export default function MultiSourceIntakeStagingPage() {
         const parsed = JSON.parse(raw) as Partial<IntakeStageData>;
 
         if (parsed.storeProfile) {
+          const mode: AddressSelectionMode =
+            parsed.storeProfile.selectedAddressType || "physical";
+          const hydratedPrimaryAddr =
+            parsed.storeProfile.address ||
+            parsed.storeProfile.streetAddress ||
+            (mode === "mailing"
+              ? parsed.storeProfile.mailingAddress ||
+                parsed.storeProfile.physicalAddress ||
+                ""
+              : parsed.storeProfile.physicalAddress ||
+                parsed.storeProfile.mailingAddress ||
+                "");
+
           const hydratedProfile: StoreProfileData = {
             legalName: parsed.storeProfile.legalName || "",
             dbaName: parsed.storeProfile.dbaName || "",
@@ -904,7 +1015,11 @@ export default function MultiSourceIntakeStagingPage() {
               toSlug(
                 parsed.storeProfile.dbaName || parsed.storeProfile.legalName || ""
               ),
-            streetAddress: parsed.storeProfile.streetAddress || "",
+            physicalAddress: parsed.storeProfile.physicalAddress || "",
+            mailingAddress: parsed.storeProfile.mailingAddress || "",
+            address: hydratedPrimaryAddr,
+            selectedAddressType: mode,
+            streetAddress: hydratedPrimaryAddr,
             city: parsed.storeProfile.city || "",
             state: parsed.storeProfile.state || "",
             zipCode: parsed.storeProfile.zipCode || "",
@@ -1038,6 +1153,32 @@ export default function MultiSourceIntakeStagingPage() {
       slugRef.current.value = toSlug(dbaVal || legalVal);
     }
 
+    // Keep primary stand address synchronized with the active selected address type when editing physicalAddress or mailingAddress
+    const activeType: AddressSelectionMode =
+      storeProfileRef.current.selectedAddressType || "physical";
+    if (
+      field === "physicalAddress" &&
+      activeType === "physical" &&
+      addressRef.current &&
+      physicalAddressRef.current
+    ) {
+      addressRef.current.value = physicalAddressRef.current.value;
+    } else if (
+      field === "mailingAddress" &&
+      activeType === "mailing" &&
+      addressRef.current &&
+      mailingAddressRef.current
+    ) {
+      addressRef.current.value = mailingAddressRef.current.value;
+    } else if (
+      (field === "streetAddress" || field === "address") &&
+      addressRef.current
+    ) {
+      if (activeType === "physical" && physicalAddressRef.current && !physicalAddressRef.current.value.trim()) {
+        physicalAddressRef.current.value = addressRef.current.value;
+      }
+    }
+
     const currentProfile = readStoreProfileFromDom();
     persistStageToStorage({ profile: currentProfile });
   };
@@ -1052,7 +1193,58 @@ export default function MultiSourceIntakeStagingPage() {
     const updated = readStoreProfileFromDom();
     setActiveSlugBadge(updated.merchantSlug);
     setActiveDbaBadge(updated.dbaName || updated.legalName || "");
+    setDetectedPhysicalBadge(updated.physicalAddress || "");
+    setDetectedMailingBadge(updated.mailingAddress || "");
     persistStageToStorage({ profile: updated });
+  };
+
+  // Interactive chooser toggle between Physical / Ship-To (Default) and Mailing / Bill-To
+  const handleSelectAddressMode = (mode: AddressSelectionMode) => {
+    storeProfileRef.current.selectedAddressType = mode;
+    setSelectedAddressMode(mode);
+
+    const physVal =
+      physicalAddressRef.current?.value.trim() ||
+      storeProfileRef.current.physicalAddress ||
+      "";
+    const mailVal =
+      mailingAddressRef.current?.value.trim() ||
+      storeProfileRef.current.mailingAddress ||
+      "";
+    const chosenAddr =
+      mode === "mailing" ? mailVal || physVal : physVal || mailVal;
+
+    if (addressRef.current && chosenAddr) {
+      addressRef.current.value = chosenAddr;
+    }
+
+    const parsedParts = parseCityStateZipFromAddress(chosenAddr);
+    if (parsedParts.city && cityRef.current) {
+      cityRef.current.value = parsedParts.city;
+    }
+    if (parsedParts.state && stateRef.current) {
+      stateRef.current.value = parsedParts.state;
+    }
+    if (parsedParts.zip && zipRef.current) {
+      zipRef.current.value = parsedParts.zip;
+    }
+
+    const updated = readStoreProfileFromDom();
+    updated.selectedAddressType = mode;
+    if (chosenAddr) {
+      updated.address = chosenAddr;
+      updated.streetAddress = chosenAddr;
+    }
+    storeProfileRef.current = updated;
+    setDetectedPhysicalBadge(updated.physicalAddress || "");
+    setDetectedMailingBadge(updated.mailingAddress || "");
+    persistStageToStorage({ profile: updated });
+
+    setStatusBanner(
+      mode === "physical"
+        ? `Switched stand primary address to Physical / Ship-To: "${chosenAddr || "—"}".`
+        : `Switched stand primary address to Mailing / Bill-To: "${chosenAddr || "—"}".`
+    );
   };
 
   /**
@@ -1528,14 +1720,51 @@ export default function MultiSourceIntakeStagingPage() {
           extracted.suggestedSlug?.trim() ||
           currentSlug;
 
+        const extractedPhysical =
+          (typeof extracted.physicalAddress === "string"
+            ? extracted.physicalAddress.trim()
+            : "") || "";
+        const extractedMailing =
+          (typeof extracted.mailingAddress === "string"
+            ? extracted.mailingAddress.trim()
+            : "") || "";
+        const extractedSingleAddr =
+          (typeof extracted.streetAddress === "string"
+            ? extracted.streetAddress.trim()
+            : "") ||
+          (typeof extracted.address === "string"
+            ? extracted.address.trim()
+            : "") ||
+          "";
+
+        const nextPhysicalAddress =
+          extractedPhysical ||
+          current.physicalAddress ||
+          extractedSingleAddr ||
+          "";
+        const nextMailingAddress =
+          extractedMailing || current.mailingAddress || "";
+        const chosenMode: AddressSelectionMode =
+          current.selectedAddressType || "physical";
+        const nextPrimaryAddress =
+          chosenMode === "mailing" && nextMailingAddress
+            ? nextMailingAddress
+            : nextPhysicalAddress ||
+              extractedSingleAddr ||
+              current.address ||
+              current.streetAddress ||
+              nextMailingAddress ||
+              "";
+
         const nextProfile: StoreProfileData = {
           legalName: reconciledLegal,
           dbaName: reconciledDba,
           merchantSlug: resolvedSlug,
-          streetAddress:
-            extracted.streetAddress?.trim() ||
-            extracted.address?.trim() ||
-            current.streetAddress,
+          physicalAddress: nextPhysicalAddress,
+          mailingAddress: nextMailingAddress,
+          address: nextPrimaryAddress,
+          selectedAddressType: chosenMode,
+          streetAddress: nextPrimaryAddress,
           city: extracted.city?.trim() || current.city,
           state: extracted.state?.trim() || current.state,
           zipCode:
@@ -1826,6 +2055,60 @@ export default function MultiSourceIntakeStagingPage() {
         }
 
         const vendorName = data.vendorName || "Distributor Invoice";
+
+        // Reconcile Physical / Ship-To and Mailing / Bill-To addresses from the invoice
+        const invPhysical =
+          typeof data.physicalAddress === "string"
+            ? data.physicalAddress.trim()
+            : "";
+        const invMailing =
+          typeof data.mailingAddress === "string"
+            ? data.mailingAddress.trim()
+            : "";
+        const invFallbackAddr =
+          typeof data.address === "string" ? data.address.trim() : "";
+
+        const currentProfile = readStoreProfileFromDom();
+        let nextProfile = currentProfile;
+
+        if (invPhysical || invMailing || invFallbackAddr) {
+          const reconciledPhysical =
+            invPhysical ||
+            currentProfile.physicalAddress ||
+            (!invMailing ? invFallbackAddr : "") ||
+            "";
+          const reconciledMailing =
+            invMailing || currentProfile.mailingAddress || "";
+          const chosenMode: AddressSelectionMode =
+            currentProfile.selectedAddressType || "physical";
+
+          const resolvedPrimaryAddr =
+            chosenMode === "mailing" && reconciledMailing
+              ? reconciledMailing
+              : reconciledPhysical ||
+                invFallbackAddr ||
+                currentProfile.address ||
+                currentProfile.streetAddress ||
+                reconciledMailing ||
+                "";
+
+          const parsedParts = parseCityStateZipFromAddress(resolvedPrimaryAddr);
+
+          nextProfile = {
+            ...currentProfile,
+            physicalAddress: reconciledPhysical,
+            mailingAddress: reconciledMailing,
+            address: resolvedPrimaryAddr,
+            selectedAddressType: chosenMode,
+            streetAddress: resolvedPrimaryAddr,
+            city: currentProfile.city || parsedParts.city || "",
+            state: currentProfile.state || parsedParts.state || "",
+            zipCode: currentProfile.zipCode || parsedParts.zip || "",
+          };
+
+          writeStoreProfileToInputs(nextProfile);
+          persistStageToStorage({ profile: nextProfile });
+        }
 
         if (Array.isArray(data.retailItems) && data.retailItems.length > 0) {
           setStagedRetailItems((prev) => {
@@ -2741,23 +3024,33 @@ export default function MultiSourceIntakeStagingPage() {
             </div>
 
             <div>
-              <label
-                htmlFor="store-address"
-                className="block text-[11px] font-mono uppercase text-slate-400 mb-1"
-              >
-                Street Address
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label
+                  htmlFor="store-address"
+                  className="block text-[11px] font-mono uppercase text-slate-400"
+                >
+                  Active Stand Address
+                </label>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                  {selectedAddressMode === "mailing"
+                    ? "Mailing / Bill-To"
+                    : "Physical / Ship-To"}
+                </span>
+              </div>
               <input
                 id="store-address"
                 ref={addressRef}
                 type="text"
                 defaultValue=""
                 autoComplete="off"
-                placeholder="Street address"
+                placeholder="Primary stand street address"
                 onChange={() => handleStoreInputChange("streetAddress")}
                 onBlur={handleStoreInputBlur}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
+                className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
               />
+              <span className="block text-[10px] text-slate-500 mt-1">
+                Primary address synced to Dashboard dossier
+              </span>
             </div>
 
             <div>
@@ -2818,6 +3111,153 @@ export default function MultiSourceIntakeStagingPage() {
                 onBlur={handleStoreInputBlur}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500 font-mono"
               />
+            </div>
+          </div>
+
+          {/* Physical (Ship-To) vs. Mailing (Bill-To) Address Reconciliation & Interactive Chooser */}
+          <div className="pt-4 border-t border-slate-800/80 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs font-bold text-white">
+                    Physical (Ship-To) vs. Mailing (Bill-To) Address Selection
+                  </span>
+                  {Boolean(detectedPhysicalBadge && detectedMailingBadge) && (
+                    <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/40">
+                      Dual Invoice Addresses Detected
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Choose which parsed address should serve as the stand&apos;s primary address, or edit either field manually below.
+                </p>
+              </div>
+
+              {/* Interactive Address Chooser Badge */}
+              <div
+                role="group"
+                aria-label="Choose active stand address"
+                className="inline-flex flex-wrap items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl p-1"
+              >
+                <button
+                  type="button"
+                  onClick={() => handleSelectAddressMode("physical")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition cursor-pointer ${
+                    selectedAddressMode === "physical"
+                      ? "bg-amber-500 text-slate-950 shadow-sm"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  [ Use Physical / Ship-To (Default) ]
+                </button>
+                <span className="text-slate-700 font-mono text-xs">|</span>
+                <button
+                  type="button"
+                  onClick={() => handleSelectAddressMode("mailing")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition cursor-pointer ${
+                    selectedAddressMode === "mailing"
+                      ? "bg-amber-500 text-slate-950 shadow-sm"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  [ Use Mailing / Bill-To ]
+                </button>
+              </div>
+            </div>
+
+            {/* Dual Parsed Address Comparison & Manual Edit Fields */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div
+                className={`rounded-xl border p-3.5 transition ${
+                  selectedAddressMode === "physical"
+                    ? "bg-amber-950/15 border-amber-500/50"
+                    : "bg-slate-950/60 border-slate-800"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <label
+                    htmlFor="store-physical-address"
+                    className="text-[11px] font-mono uppercase font-bold text-amber-300"
+                  >
+                    Physical / Ship-To Address (Stand Location)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectAddressMode("physical")}
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded transition cursor-pointer ${
+                      selectedAddressMode === "physical"
+                        ? "bg-amber-500 text-slate-950 font-bold"
+                        : "bg-slate-800 text-slate-300 hover:text-white"
+                    }`}
+                  >
+                    {selectedAddressMode === "physical"
+                      ? "✓ Active Stand Address"
+                      : "Select Physical"}
+                  </button>
+                </div>
+                <input
+                  id="store-physical-address"
+                  ref={physicalAddressRef}
+                  type="text"
+                  defaultValue=""
+                  autoComplete="off"
+                  placeholder="Ship-To / delivery stand address (e.g., 1402 W Yakima Ave)"
+                  onChange={() => handleStoreInputChange("physicalAddress")}
+                  onBlur={handleStoreInputBlur}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
+                />
+                {detectedPhysicalBadge && (
+                  <p className="text-[11px] text-slate-400 mt-1.5 font-mono truncate">
+                    Parsed Ship-To: <span className="text-slate-200">{detectedPhysicalBadge}</span>
+                  </p>
+                )}
+              </div>
+
+              <div
+                className={`rounded-xl border p-3.5 transition ${
+                  selectedAddressMode === "mailing"
+                    ? "bg-amber-950/15 border-amber-500/50"
+                    : "bg-slate-950/60 border-slate-800"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <label
+                    htmlFor="store-mailing-address"
+                    className="text-[11px] font-mono uppercase font-bold text-cyan-300"
+                  >
+                    Mailing / Bill-To Address (Corporate / PO Box)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectAddressMode("mailing")}
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded transition cursor-pointer ${
+                      selectedAddressMode === "mailing"
+                        ? "bg-amber-500 text-slate-950 font-bold"
+                        : "bg-slate-800 text-slate-300 hover:text-white"
+                    }`}
+                  >
+                    {selectedAddressMode === "mailing"
+                      ? "✓ Active Stand Address"
+                      : "Select Mailing"}
+                  </button>
+                </div>
+                <input
+                  id="store-mailing-address"
+                  ref={mailingAddressRef}
+                  type="text"
+                  defaultValue=""
+                  autoComplete="off"
+                  placeholder="Bill-To / corporate / PO Box address"
+                  onChange={() => handleStoreInputChange("mailingAddress")}
+                  onBlur={handleStoreInputBlur}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-base sm:text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
+                />
+                {detectedMailingBadge && (
+                  <p className="text-[11px] text-slate-400 mt-1.5 font-mono truncate">
+                    Parsed Bill-To: <span className="text-slate-200">{detectedMailingBadge}</span>
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         </section>
