@@ -2,10 +2,15 @@
 
 import { useEffect, useState, useRef, useCallback, ChangeEvent } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   INTAKE_STAGE_STORAGE_KEY,
   toSlug,
+  readSavedSessionsFromStorage,
+  restoreSessionToActiveStage,
+  clearActiveStageAndRulesFromStorage,
   type IntakeStageData,
+  type OnboardingSession,
 } from "@/app/onboard/intake/page";
 import {
   RULES_CONFIG_STORAGE_KEY,
@@ -199,6 +204,7 @@ const buildPagesFromCatalog = (
 };
 
 export default function BarMaidDashboard() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<
     "intake" | "audit" | "studio" | "deploy"
   >("studio");
@@ -212,6 +218,7 @@ export default function BarMaidDashboard() {
   const [merchantDisplayName, setMerchantDisplayName] =
     useState<string>("Unassigned Merchant");
   const [posAuth, setPosAuth] = useState<PosAuthRecord | null>(null);
+  const [savedSessions, setSavedSessions] = useState<OnboardingSession[]>([]);
 
   // Live Square Raw Data Store
   const [squareItems, setSquareItems] = useState<SquareRawItem[]>([]);
@@ -268,6 +275,8 @@ export default function BarMaidDashboard() {
 
   // Hydrate active tenant and staged drink/modifier catalog from 'barmaid_intake_stage'
   useEffect(() => {
+    setSavedSessions(readSavedSessionsFromStorage());
+
     let resolvedSlug = "unassigned";
     let resolvedDisplayName = "Unassigned Merchant";
     let customAccessToken = "";
@@ -808,8 +817,171 @@ export default function BarMaidDashboard() {
   const connectedBadgeLabel =
     posAuth?.provider === "clover" ? "Clover Connected" : "Square Connected";
 
+  const handleFastSwitchClient = (val: string) => {
+    if (val === "__new__") {
+      clearActiveStageAndRulesFromStorage();
+      setMerchantSlug("unassigned");
+      setMerchantDisplayName("Unassigned Merchant");
+      setPosAuth(null);
+      setStagedItems([]);
+      setStagedModifiers([]);
+      setPages([createEmptyPage(0)]);
+      setActivePageIndex(0);
+      setSelectedTileId(1);
+      router.push("/onboard/intake");
+      return;
+    }
+    const found = savedSessions.find(
+      (s) => s.storeProfile.merchantSlug === val || s.id === val
+    );
+    if (found) {
+      const restored = restoreSessionToActiveStage(found);
+      const nextSlug =
+        restored.storeProfile.merchantSlug ||
+        toSlug(
+          restored.storeProfile.dbaName || restored.storeProfile.legalName || ""
+        ) ||
+        "unassigned";
+      const nextDisplay =
+        restored.storeProfile.dbaName ||
+        restored.storeProfile.legalName ||
+        (nextSlug === "unassigned" ? "Unassigned Merchant" : nextSlug);
+
+      setMerchantSlug(nextSlug);
+      setMerchantDisplayName(nextDisplay);
+
+      const hydratedDrinksAndFood: StagedItem[] = (
+        restored.stagedItems || []
+      )
+        .filter((item) => item.included !== false)
+        .map((item) => ({
+          name: item.name,
+          categoryName:
+            item.classification === "food"
+              ? "Food & Pastries"
+              : item.categoryName || "Espresso Bar",
+          variations:
+            item.variations && item.variations.length > 0
+              ? item.variations
+              : [{ size: "16oz", price: 4.75 }],
+          source: "upload" as const,
+        }));
+
+      const hydratedRetail: StagedItem[] = (restored.retailItems || [])
+        .filter((item) => item.included !== false)
+        .map((item) => ({
+          name: item.name,
+          categoryName: "Retail Packaged",
+          variations: [
+            {
+              size: item.sku || "Unit",
+              price:
+                item.suggestedPriceCents && item.suggestedPriceCents > 0
+                  ? item.suggestedPriceCents / 100
+                  : 14.0,
+            },
+          ],
+          source: "upload" as const,
+        }));
+
+      const defaultModPrice =
+        found.rulesConfig?.modifierPricing?.syrupSauceAddOnDollars ?? 0.75;
+
+      const hydratedModifiers: StagedModifier[] = (restored.modifiers || [])
+        .filter((mod) => mod.included !== false)
+        .map((mod) => ({
+          name: mod.name,
+          price: defaultModPrice,
+        }));
+
+      const combinedStagedItems = [...hydratedDrinksAndFood, ...hydratedRetail];
+      setStagedItems(combinedStagedItems);
+      setStagedModifiers(hydratedModifiers);
+      const hydratedPages = buildPagesFromCatalog(
+        combinedStagedItems,
+        hydratedModifiers,
+        selectedArchetype
+      );
+      setPages(hydratedPages);
+      setActivePageIndex(0);
+      setSelectedTileId(1);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {/* Unified Top Command Navigation Bar */}
+      <div className="border-b border-slate-800/80 bg-slate-950/95 backdrop-blur px-6 py-2.5">
+        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
+          {/* Left button: ← Dashboard */}
+          <Link
+            href="/dashboard"
+            className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/50 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
+          >
+            <span>← Dashboard</span>
+          </Link>
+
+          {/* Center badge: Active Client DBA & Slug */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-full px-4 py-1 flex items-center space-x-2 shadow-inner">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                merchantSlug && merchantSlug !== "unassigned"
+                  ? "bg-amber-400"
+                  : "bg-slate-600"
+              }`}
+            ></span>
+            <span className="text-xs font-bold text-white">
+              {merchantDisplayName}
+            </span>
+            <span className="text-xs font-mono text-amber-400">
+              ({merchantSlug})
+            </span>
+          </div>
+
+          {/* Right fast switcher: Client Folder Dropdown */}
+          <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
+              <span className="text-amber-400 text-xs" aria-hidden="true">
+                📁
+              </span>
+              <select
+                aria-label="Fast switch client folder"
+                value={
+                  savedSessions.some(
+                    (s) =>
+                      s.storeProfile.merchantSlug === merchantSlug ||
+                      s.id === merchantSlug
+                  )
+                    ? merchantSlug
+                    : ""
+                }
+                onChange={(e) => handleFastSwitchClient(e.target.value)}
+                className="bg-slate-900 text-xs font-semibold text-slate-200 focus:outline-none cursor-pointer pr-1"
+              >
+                <option value="">
+                  {merchantSlug && merchantSlug !== "unassigned"
+                    ? `Active: ${merchantDisplayName}`
+                    : "Switch Client Folder..."}
+                </option>
+                {savedSessions.map((s) => {
+                  const slug = s.storeProfile.merchantSlug || s.id;
+                  const label =
+                    s.storeProfile.dbaName ||
+                    s.storeProfile.legalName ||
+                    slug;
+                  return (
+                    <option key={s.id} value={slug}>
+                      {label} ({slug})
+                    </option>
+                  );
+                })}
+                <option value="__new__">+ New Client Folder</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Top Application Bar */}
       <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-4">

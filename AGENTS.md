@@ -79,3 +79,26 @@ app/
 
 * **Verification Tag**:
   - `git tag v0.60-onboarding-pipeline-road-ready` pushed to `d6fergus-tech/barmaid` on GitHub.
+  ### BarMaid Onboarding & POS Optimization Engine — Milestone Summary (v0.66)
+
+* **Deployment & Production Status**:
+  - Running live on production HTTPS via Vercel (`barmaid-green.vercel.app`).
+  - Clean client-side persistence and zero iOS Safari camera or refresh loop regressions.
+
+* **Step 1: Document Intake & Merchant Identity**:
+  - Implemented automatic OCR extraction of business trade names directly from exterior signage and chalkboard menu headers in Dropzone 2.
+  - Decoupled **DBA / Trade Name** (operating storefront identity) from **Legal Entity Name** (official state license/LLC registration), allowing onboarding to begin immediately without requiring an initial business license.
+  - Auto-derives clean kebab-case `merchant_slug` baselines that synchronize across downstream steps.
+  - Fixed full merchant reset to completely purge `barmaid_intake_stage` and `barmaid_rules_config` from `localStorage`, ensuring a true blank state (`unassigned`, 0 counts) when starting a new stand.
+
+* **Multi-Client Session Archive & Master Purge**:
+  - Implemented persistent multi-client session store (`barmaid_saved_sessions`).
+  - Added dedicated Past Sessions drawer supporting individual shop reloading, JSON file backup exports, and a full master "Purge All Sessions" control for resetting between field test runs.
+
+* **Step 2 & Step 3: Dynamic Grid & Auth Modals**:
+  - Removed all hardcoded mock fallback tiles (*Dillanos One Love*, *Bacon Gouda Ciabatta*, *12oz Drip*); the register simulator now dynamically binds strictly to active staged items or renders clean `[Open Slot]` spaces when unassigned.
+  - Converted Square and Clover connections to interactive overlay modals supporting direct Bearer access token input and cloud OAuth handshakes.
+  - Added persistent header return navigation from the Ergonomics Layout Studio back to Step 3.
+
+* **Verification Tag**:
+  - `git tag v0.66-menu-board-merchant-extraction-complete` pushed to `d6fergus-tech/barmaid` on GitHub.

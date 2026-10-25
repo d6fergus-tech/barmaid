@@ -676,6 +676,21 @@ export function exportAllSessionsJson(sessions: OnboardingSession[]): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+export function exportSingleSessionJson(session: OnboardingSession): void {
+  if (typeof window === "undefined") return;
+  const slug = session.storeProfile.merchantSlug || session.id || "client";
+  const payload = JSON.stringify(session, null, 2);
+  const blob = new Blob([payload], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `barmaid_${slug}_folder.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export default function MultiSourceIntakeStagingPage() {
   const router = useRouter();
 
@@ -699,6 +714,7 @@ export default function MultiSourceIntakeStagingPage() {
   const isResettingRef = useRef<boolean>(false);
 
   const [activeSlugBadge, setActiveSlugBadge] = useState<string>("");
+  const [activeDbaBadge, setActiveDbaBadge] = useState<string>("");
   const [licenseDetected, setLicenseDetected] = useState<boolean>(false);
 
   // Saved Client Sessions Archive ('barmaid_saved_sessions')
@@ -762,6 +778,7 @@ export default function MultiSourceIntakeStagingPage() {
     if (stateRef.current) stateRef.current.value = profile.state || "";
     if (zipRef.current) zipRef.current.value = profile.zipCode || "";
     setActiveSlugBadge(profile.merchantSlug || "");
+    setActiveDbaBadge(profile.dbaName || profile.legalName || "");
   }, []);
 
   // Build and persist canonical IntakeStageData to localStorage + auto-archive session
@@ -1034,6 +1051,7 @@ export default function MultiSourceIntakeStagingPage() {
     }
     const updated = readStoreProfileFromDom();
     setActiveSlugBadge(updated.merchantSlug);
+    setActiveDbaBadge(updated.dbaName || updated.legalName || "");
     persistStageToStorage({ profile: updated });
   };
 
@@ -1256,6 +1274,7 @@ export default function MultiSourceIntakeStagingPage() {
     slugManuallyEditedRef.current = false;
     writeStoreProfileToInputs({ ...EMPTY_STORE_PROFILE });
     setActiveSlugBadge("");
+    setActiveDbaBadge("");
     setLicenseDetected(false);
 
     setLicenseFiles([]);
@@ -2080,6 +2099,94 @@ export default function MultiSourceIntakeStagingPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-24">
+      {/* Unified Top Command Navigation Bar */}
+      <div className="border-b border-slate-800/80 bg-slate-950/95 backdrop-blur px-6 py-2.5">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+          {/* Left button: ← Dashboard */}
+          <Link
+            href="/dashboard"
+            className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/50 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
+          >
+            <span>← Dashboard</span>
+          </Link>
+
+          {/* Center badge: Active Client DBA & Slug */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-full px-4 py-1 flex items-center space-x-2 shadow-inner">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                activeSlugBadge && activeSlugBadge !== "unassigned"
+                  ? "bg-amber-400"
+                  : "bg-slate-600"
+              }`}
+            ></span>
+            <span className="text-xs font-bold text-white">
+              {activeDbaBadge ||
+                (activeSlugBadge && activeSlugBadge !== "unassigned"
+                  ? activeSlugBadge
+                  : "Unassigned Client")}
+            </span>
+            <span className="text-xs font-mono text-amber-400">
+              ({activeSlugBadge || "unassigned"})
+            </span>
+          </div>
+
+          {/* Right fast switcher: Client Folder Dropdown & Drawer Trigger */}
+          <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
+              <span className="text-amber-400 text-xs" aria-hidden="true">
+                📁
+              </span>
+              <select
+                aria-label="Fast switch client folder"
+                value={
+                  savedSessions.some(
+                    (s) =>
+                      s.storeProfile.merchantSlug === activeSlugBadge ||
+                      s.id === activeSlugBadge
+                  )
+                    ? activeSlugBadge
+                    : ""
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === "__new__") {
+                    handleStartNewShop();
+                    return;
+                  }
+                  const found = savedSessions.find(
+                    (s) =>
+                      s.storeProfile.merchantSlug === val || s.id === val
+                  );
+                  if (found) {
+                    handleLoadSavedSession(found);
+                  }
+                }}
+                className="bg-slate-900 text-xs font-semibold text-slate-200 focus:outline-none cursor-pointer pr-1"
+              >
+                <option value="">
+                  {activeSlugBadge && activeSlugBadge !== "unassigned"
+                    ? `Active: ${activeDbaBadge || activeSlugBadge}`
+                    : "Switch Client Folder..."}
+                </option>
+                {savedSessions.map((s) => {
+                  const slug = s.storeProfile.merchantSlug || s.id;
+                  const label =
+                    s.storeProfile.dbaName ||
+                    s.storeProfile.legalName ||
+                    slug;
+                  return (
+                    <option key={s.id} value={slug}>
+                      {label} ({slug})
+                    </option>
+                  );
+                })}
+                <option value="__new__">+ New Client Folder</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Onboarding Wizard Top Header */}
       <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50 px-6 py-4">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
