@@ -16,6 +16,7 @@ import {
   RULES_CONFIG_STORAGE_KEY,
   type BusinessRulesConfig,
   type PersistedAuditMetrics,
+  type PersistedLayoutTemplateCode,
   type PersistedPreOptimizeSnapshot,
 } from "@/app/onboard/rules/page";
 import {
@@ -30,13 +31,6 @@ const BASELINE_AUDIT_METRICS: PersistedAuditMetrics = {
   frictionLabel: "Moderate Friction",
   averageBaristaTaps: 4.2,
   targetMet: false,
-};
-
-const OPTIMIZED_AUDIT_METRICS: PersistedAuditMetrics = {
-  healthScore: 94,
-  frictionLabel: "Low Friction",
-  averageBaristaTaps: 1.9,
-  targetMet: true,
 };
 
 type Variation = {
@@ -96,6 +90,53 @@ type SquareRawCategory = {
 
 type ArchetypeId = "fast-cash" | "specialty" | "color-coded";
 type TileColor = "amber" | "cyan" | "emerald" | "slate" | "blank";
+
+const toTemplateStorageCode = (
+  arch: ArchetypeId
+): PersistedLayoutTemplateCode => {
+  if (arch === "specialty") return "SPECIALTY";
+  if (arch === "color-coded") return "COLOR-ZONED";
+  return "FAST-CASH";
+};
+
+const fromTemplateStorageCode = (
+  code?: PersistedLayoutTemplateCode | string | null
+): ArchetypeId => {
+  if (code === "SPECIALTY" || code === "specialty") return "specialty";
+  if (code === "COLOR-ZONED" || code === "color-coded") return "color-coded";
+  return "fast-cash";
+};
+
+const getTemplateAuditMetrics = (
+  arch: ArchetypeId,
+  optimized: boolean
+): PersistedAuditMetrics => {
+  if (!optimized) {
+    return { ...BASELINE_AUDIT_METRICS };
+  }
+  if (arch === "specialty") {
+    return {
+      healthScore: 91,
+      frictionLabel: "Low Friction",
+      averageBaristaTaps: 2.1,
+      targetMet: true,
+    };
+  }
+  if (arch === "color-coded") {
+    return {
+      healthScore: 93,
+      frictionLabel: "Low Friction",
+      averageBaristaTaps: 2.0,
+      targetMet: true,
+    };
+  }
+  return {
+    healthScore: 94,
+    frictionLabel: "Low Friction",
+    averageBaristaTaps: 1.9,
+    targetMet: true,
+  };
+};
 
 type GridTile = {
   id: number;
@@ -222,13 +263,15 @@ const buildPagesFromCatalog = (
 };
 
 /**
- * Ergonomics Auto-Optimization Heuristic:
- * Maps high-frequency anchors (Espresso staples, energy drinks) into primary 5x4 thumb-reach positions,
- * binds default 16oz single-tap sizing, and links unified modifier groups.
+ * Template-Aware Ergonomics Auto-Optimization Heuristic:
+ * - Fast-Cash (Optimized): 16oz single-tap top-velocity drink anchors placed in prime thumb reach zones.
+ * - Specialty (Optimized): Beverage base families grouped by sales frequency to minimize tap distance when opening size sheets.
+ * - Color-Zoned (Optimized): Station color blocks (Espresso Bar, Cold Drinks/Energy, Food) positioned with high-velocity stations closest to primary tapping hand.
  */
 const buildAutoOptimizedPages = (
   items: StagedItem[],
   modifiers: StagedModifier[],
+  archetype: ArchetypeId = "fast-cash",
   fallbackCurrentPages?: GridTile[][]
 ): GridTile[][] => {
   if (items.length === 0 && modifiers.length === 0) {
@@ -245,7 +288,10 @@ const buildAutoOptimizedPages = (
             .trim();
           return {
             ...tile,
-            label: isBeverageTile ? `16oz ${cleanLabel}` : tile.label,
+            label:
+              archetype === "fast-cash" && isBeverageTile
+                ? `16oz ${cleanLabel}`
+                : cleanLabel,
           };
         })
       );
@@ -253,7 +299,7 @@ const buildAutoOptimizedPages = (
     return [createEmptyPage(0)];
   }
 
-  const getErgonomicPriority = (item: StagedItem): number => {
+  const getSalesVelocityRank = (item: StagedItem): number => {
     const combined = `${item.name} ${item.categoryName || ""}`;
     // Tier 1: High-velocity Espresso staples (primary thumb-reach anchors)
     if (
@@ -284,9 +330,33 @@ const buildAutoOptimizedPages = (
     return 5;
   };
 
-  const sortedItems = [...items].sort(
-    (a, b) => getErgonomicPriority(a) - getErgonomicPriority(b)
-  );
+  const getStationBlockRank = (color: TileColor): number => {
+    // High-velocity stations closest to primary tapping hand:
+    // 1: Espresso Bar (amber), 2: Cold Drinks/Energy (cyan), 3: Food (emerald), 4: Retail (slate)
+    if (color === "amber") return 1;
+    if (color === "cyan") return 2;
+    if (color === "emerald") return 3;
+    return 4;
+  };
+
+  let sortedItems: StagedItem[] = [];
+
+  if (archetype === "color-coded") {
+    // Color-Zoned (Optimized): Group strictly by station color block, and sort by sales velocity within each station
+    sortedItems = [...items].sort((a, b) => {
+      const colorA = getItemColor(a.name, a.categoryName);
+      const colorB = getItemColor(b.name, b.categoryName);
+      const blockDiff =
+        getStationBlockRank(colorA) - getStationBlockRank(colorB);
+      if (blockDiff !== 0) return blockDiff;
+      return getSalesVelocityRank(a) - getSalesVelocityRank(b);
+    });
+  } else {
+    // Fast-Cash & Specialty (Optimized): Sort across catalog by sales velocity / frequency
+    sortedItems = [...items].sort(
+      (a, b) => getSalesVelocityRank(a) - getSalesVelocityRank(b)
+    );
+  }
 
   const combinedTilesData: Array<{
     label: string;
@@ -295,17 +365,45 @@ const buildAutoOptimizedPages = (
   }> = sortedItems.map((item) => {
     const color = getItemColor(item.name, item.categoryName);
     const isBeverage = color === "amber" || color === "cyan";
+    const hasMultipleSizes = item.variations.length > 1;
     const sixteenOzVar =
       item.variations.find((v) => /16\s*oz/i.test(v.size)) ||
       item.variations[0];
-    const resolvedPrice = sixteenOzVar ? sixteenOzVar.price : 4.75;
+    const primaryVar = item.variations[0];
+    const resolvedSixteenPrice = sixteenOzVar ? sixteenOzVar.price : 4.75;
+    const resolvedBasePrice = primaryVar ? primaryVar.price : 4.5;
     const cleanName = item.name
       .replace(/^(8oz|12oz|16oz|20oz|24oz|32oz)\s+/i, "")
       .trim();
 
+    if (archetype === "specialty") {
+      // Specialty (Optimized): Beverage base families grouped by sales frequency to minimize tap distance when opening size sheets
+      return {
+        label: cleanName,
+        price:
+          isBeverage && hasMultipleSizes
+            ? "Select Size"
+            : `$${resolvedBasePrice.toFixed(2)}`,
+        color,
+      };
+    }
+
+    if (archetype === "color-coded") {
+      // Color-Zoned (Optimized): Station color blocks with base+ pricing indicator
+      return {
+        label: cleanName,
+        price:
+          isBeverage && hasMultipleSizes
+            ? `$${resolvedBasePrice.toFixed(2)}+`
+            : `$${resolvedBasePrice.toFixed(2)}`,
+        color,
+      };
+    }
+
+    // Fast-Cash (Optimized): 16oz single-tap top-velocity drink anchors in prime thumb reach zones
     return {
       label: isBeverage ? `16oz ${cleanName}` : cleanName,
-      price: `$${resolvedPrice.toFixed(2)}`,
+      price: `$${resolvedSixteenPrice.toFixed(2)}`,
       color,
     };
   });
@@ -422,19 +520,134 @@ export default function BarMaidDashboard() {
   const boardInputRef = useRef<HTMLInputElement>(null);
   const posInputRef = useRef<HTMLInputElement>(null);
 
-  // Preset swap dynamically over staged items/modifiers (or empty slots if unassigned)
+  const persistRulesConfigState = useCallback(
+    (updates: {
+      activeLayoutTemplate: PersistedLayoutTemplateCode;
+      isOptimized: boolean;
+      optimizedGridPages?: GridTile[][];
+      preOptimizeSnapshot?: PersistedPreOptimizeSnapshot | null;
+    }) => {
+      try {
+        const rawRules =
+          localStorage.getItem(RULES_CONFIG_STORAGE_KEY) ||
+          sessionStorage.getItem(RULES_CONFIG_STORAGE_KEY);
+        const existingRules: Partial<BusinessRulesConfig> = rawRules
+          ? (JSON.parse(rawRules) as Partial<BusinessRulesConfig>)
+          : {};
+
+        const updatedRulesConfig: BusinessRulesConfig = {
+          merchant_slug:
+            existingRules.merchant_slug || merchantSlug || "unassigned",
+          sizeMatrix: Array.isArray(existingRules.sizeMatrix)
+            ? existingRules.sizeMatrix
+            : [
+                {
+                  size: "8oz",
+                  enabled: true,
+                  defaultShots: 1,
+                  defaultSyrupPumps: 2,
+                },
+                {
+                  size: "12oz",
+                  enabled: true,
+                  defaultShots: 2,
+                  defaultSyrupPumps: 3,
+                },
+                {
+                  size: "16oz",
+                  enabled: true,
+                  defaultShots: 2,
+                  defaultSyrupPumps: 4,
+                },
+                {
+                  size: "20oz",
+                  enabled: true,
+                  defaultShots: 4,
+                  defaultSyrupPumps: 5,
+                },
+                {
+                  size: "24oz",
+                  enabled: true,
+                  defaultShots: 4,
+                  defaultSyrupPumps: 6,
+                },
+                {
+                  size: "32oz",
+                  enabled: true,
+                  defaultShots: 6,
+                  defaultSyrupPumps: 7,
+                },
+              ],
+          modifierPricing: existingRules.modifierPricing || {
+            altMilkUpchargeDollars: 0.75,
+            extraShotDollars: 0.75,
+            syrupSauceAddOnDollars: 0.5,
+          },
+          preferredPosPreview: existingRules.preferredPosPreview || "square",
+          savedAt: new Date().toISOString(),
+          activeLayoutTemplate: updates.activeLayoutTemplate,
+          isOptimized: updates.isOptimized,
+          optimizedGridPages: updates.optimizedGridPages,
+          preOptimizeSnapshot: updates.preOptimizeSnapshot,
+        };
+
+        const serialized = JSON.stringify(updatedRulesConfig);
+        localStorage.setItem(RULES_CONFIG_STORAGE_KEY, serialized);
+        sessionStorage.setItem(RULES_CONFIG_STORAGE_KEY, serialized);
+      } catch {
+        // Ignore storage quota errors
+      }
+    },
+    [merchantSlug]
+  );
+
+  // Template switch handler: preserves optimization state across Fast-Cash, Specialty, and Color-Zoned
   const applyPreset = useCallback(
     (arch: ArchetypeId) => {
-      const generated = buildPagesFromCatalog(
-        stagedItems,
-        stagedModifiers,
-        arch
-      );
-      setPages(generated);
-      setActivePageIndex(0);
-      setSelectedTileId(1);
+      const templateCode = toTemplateStorageCode(arch);
+      if (isOptimized) {
+        const optimizedGenerated = buildAutoOptimizedPages(
+          stagedItems,
+          stagedModifiers,
+          arch,
+          pages
+        );
+        setPages(optimizedGenerated);
+        setAuditMetrics(getTemplateAuditMetrics(arch, true));
+        setActivePageIndex(0);
+        setSelectedTileId(1);
+        persistRulesConfigState({
+          activeLayoutTemplate: templateCode,
+          isOptimized: true,
+          optimizedGridPages: optimizedGenerated,
+          preOptimizeSnapshot,
+        });
+      } else {
+        const rawGenerated = buildPagesFromCatalog(
+          stagedItems,
+          stagedModifiers,
+          arch
+        );
+        setPages(rawGenerated);
+        setAuditMetrics(getTemplateAuditMetrics(arch, false));
+        setActivePageIndex(0);
+        setSelectedTileId(1);
+        persistRulesConfigState({
+          activeLayoutTemplate: templateCode,
+          isOptimized: false,
+          optimizedGridPages: undefined,
+          preOptimizeSnapshot: null,
+        });
+      }
     },
-    [stagedItems, stagedModifiers]
+    [
+      isOptimized,
+      pages,
+      persistRulesConfigState,
+      preOptimizeSnapshot,
+      stagedItems,
+      stagedModifiers,
+    ]
   );
 
   // Hydrate active tenant and staged drink/modifier catalog from 'barmaid_intake_stage'
@@ -576,21 +789,31 @@ export default function BarMaidDashboard() {
           setPreOptimizeSnapshot(hydratedSnapshot);
         }
 
-        if (
-          parsedRules?.isOptimized &&
-          Array.isArray(parsedRules.optimizedGridPages) &&
-          parsedRules.optimizedGridPages.length > 0
-        ) {
+        const hydratedArchetype = fromTemplateStorageCode(
+          parsedRules?.activeLayoutTemplate
+        );
+        setSelectedArchetype(hydratedArchetype);
+
+        if (parsedRules?.isOptimized) {
           setIsOptimized(true);
-          setAuditMetrics(OPTIMIZED_AUDIT_METRICS);
-          setPages(parsedRules.optimizedGridPages);
+          setAuditMetrics(getTemplateAuditMetrics(hydratedArchetype, true));
+          const hydratedOptPages =
+            Array.isArray(parsedRules.optimizedGridPages) &&
+            parsedRules.optimizedGridPages.length > 0
+              ? parsedRules.optimizedGridPages
+              : buildAutoOptimizedPages(
+                  combinedStagedItems,
+                  hydratedModifiers,
+                  hydratedArchetype
+                );
+          setPages(hydratedOptPages);
         } else {
           setIsOptimized(false);
-          setAuditMetrics(BASELINE_AUDIT_METRICS);
+          setAuditMetrics(getTemplateAuditMetrics(hydratedArchetype, false));
           const hydratedPages = buildPagesFromCatalog(
             combinedStagedItems,
             hydratedModifiers,
-            "fast-cash"
+            hydratedArchetype
           );
           setPages(hydratedPages);
         }
@@ -679,15 +902,57 @@ export default function BarMaidDashboard() {
     });
   };
 
-  // Clear all tiles across all dynamic pages
+  // Clear all tiles across all dynamic pages & invalidate optimization snapshot
   const handleClearAllTiles = () => {
-    setPages((prevPages) => prevPages.map((_, idx) => createEmptyPage(idx)));
-    setSelectedTileId(pages[0]?.[0]?.id || 1);
+    const blankPages = pages.map((_, idx) => createEmptyPage(idx));
+    setPages(blankPages);
+    setSelectedTileId(blankPages[0]?.[0]?.id || 1);
+    setIsOptimized(false);
+    setPreOptimizeSnapshot(null);
+    setAuditMetrics(getTemplateAuditMetrics(selectedArchetype, false));
+
+    try {
+      localStorage.removeItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY);
+      sessionStorage.removeItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+
+    persistRulesConfigState({
+      activeLayoutTemplate: toTemplateStorageCode(selectedArchetype),
+      isOptimized: false,
+      optimizedGridPages: undefined,
+      preOptimizeSnapshot: null,
+    });
   };
 
-  // Reset to default single preset page
+  // Reset to raw unoptimized default preset & invalidate optimization snapshot
   const handleResetToDefault = () => {
-    applyPreset(selectedArchetype);
+    const rawGenerated = buildPagesFromCatalog(
+      stagedItems,
+      stagedModifiers,
+      selectedArchetype
+    );
+    setPages(rawGenerated);
+    setActivePageIndex(0);
+    setSelectedTileId(1);
+    setIsOptimized(false);
+    setPreOptimizeSnapshot(null);
+    setAuditMetrics(getTemplateAuditMetrics(selectedArchetype, false));
+
+    try {
+      localStorage.removeItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY);
+      sessionStorage.removeItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+
+    persistRulesConfigState({
+      activeLayoutTemplate: toTemplateStorageCode(selectedArchetype),
+      isOptimized: false,
+      optimizedGridPages: undefined,
+      preOptimizeSnapshot: null,
+    });
   };
 
   // Populate from staged catalog
@@ -947,27 +1212,31 @@ export default function BarMaidDashboard() {
     setActiveTab("studio");
   };
 
-  // Auto-Optimize Catalog & Layout with Full Undo Snapshot
+  // Auto-Optimize Catalog & Layout with Full Undo Snapshot (Template-Aware)
   const handleAutoOptimizeCatalog = () => {
     const baselinePagesSnapshot: GridTile[][] = pages.map((page) =>
       page.map((tile) => ({ ...tile }))
     );
 
+    const templateCode = toTemplateStorageCode(selectedArchetype);
     const snapshotPayload: PersistedPreOptimizeSnapshot = {
       pages: baselinePagesSnapshot,
-      metrics: { ...BASELINE_AUDIT_METRICS },
+      metrics: getTemplateAuditMetrics(selectedArchetype, false),
+      activeLayoutTemplate: templateCode,
       capturedAt: new Date().toISOString(),
     };
 
     const optimizedPages = buildAutoOptimizedPages(
       stagedItems,
       stagedModifiers,
+      selectedArchetype,
       pages
     );
+    const nextMetrics = getTemplateAuditMetrics(selectedArchetype, true);
 
     setPreOptimizeSnapshot(snapshotPayload);
     setIsOptimized(true);
-    setAuditMetrics(OPTIMIZED_AUDIT_METRICS);
+    setAuditMetrics(nextMetrics);
     setPages(optimizedPages);
     setActivePageIndex(0);
     setSelectedTileId(1);
@@ -982,79 +1251,24 @@ export default function BarMaidDashboard() {
         PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY,
         serializedSnapshot
       );
-
-      const rawRules =
-        localStorage.getItem(RULES_CONFIG_STORAGE_KEY) ||
-        sessionStorage.getItem(RULES_CONFIG_STORAGE_KEY);
-      const existingRules: Partial<BusinessRulesConfig> = rawRules
-        ? (JSON.parse(rawRules) as Partial<BusinessRulesConfig>)
-        : {};
-
-      const updatedRulesConfig: BusinessRulesConfig = {
-        merchant_slug:
-          existingRules.merchant_slug || merchantSlug || "unassigned",
-        sizeMatrix: Array.isArray(existingRules.sizeMatrix)
-          ? existingRules.sizeMatrix
-          : [
-              {
-                size: "8oz",
-                enabled: true,
-                defaultShots: 1,
-                defaultSyrupPumps: 2,
-              },
-              {
-                size: "12oz",
-                enabled: true,
-                defaultShots: 2,
-                defaultSyrupPumps: 3,
-              },
-              {
-                size: "16oz",
-                enabled: true,
-                defaultShots: 2,
-                defaultSyrupPumps: 4,
-              },
-              {
-                size: "20oz",
-                enabled: true,
-                defaultShots: 4,
-                defaultSyrupPumps: 5,
-              },
-              {
-                size: "24oz",
-                enabled: true,
-                defaultShots: 4,
-                defaultSyrupPumps: 6,
-              },
-              {
-                size: "32oz",
-                enabled: true,
-                defaultShots: 6,
-                defaultSyrupPumps: 7,
-              },
-            ],
-        modifierPricing: existingRules.modifierPricing || {
-          altMilkUpchargeDollars: 0.75,
-          extraShotDollars: 0.75,
-          syrupSauceAddOnDollars: 0.5,
-        },
-        preferredPosPreview: existingRules.preferredPosPreview || "square",
-        savedAt: new Date().toISOString(),
-        isOptimized: true,
-        optimizedGridPages: optimizedPages,
-        preOptimizeSnapshot: snapshotPayload,
-      };
-
-      const serializedRules = JSON.stringify(updatedRulesConfig);
-      localStorage.setItem(RULES_CONFIG_STORAGE_KEY, serializedRules);
-      sessionStorage.setItem(RULES_CONFIG_STORAGE_KEY, serializedRules);
     } catch {
       // Ignore storage quota errors
     }
+
+    persistRulesConfigState({
+      activeLayoutTemplate: templateCode,
+      isOptimized: true,
+      optimizedGridPages: optimizedPages,
+      preOptimizeSnapshot: snapshotPayload,
+    });
   };
 
-  // Undo Auto-Optimization & Restore Baseline Layout + Metrics
+  // Undo Auto-Optimization & Restore Baseline Layout + Metrics regardless of active template
   const handleUndoOptimization = () => {
+    const restoredArchetype = preOptimizeSnapshot?.activeLayoutTemplate
+      ? fromTemplateStorageCode(preOptimizeSnapshot.activeLayoutTemplate)
+      : selectedArchetype;
+
     const restoredPages =
       preOptimizeSnapshot &&
       Array.isArray(preOptimizeSnapshot.pages) &&
@@ -1062,12 +1276,17 @@ export default function BarMaidDashboard() {
         ? preOptimizeSnapshot.pages.map((page) =>
             page.map((tile) => ({ ...tile }))
           )
-        : buildPagesFromCatalog(stagedItems, stagedModifiers, selectedArchetype);
+        : buildPagesFromCatalog(
+            stagedItems,
+            stagedModifiers,
+            restoredArchetype
+          );
 
-    const restoredMetrics = preOptimizeSnapshot?.metrics || {
-      ...BASELINE_AUDIT_METRICS,
-    };
+    const restoredMetrics =
+      preOptimizeSnapshot?.metrics ||
+      getTemplateAuditMetrics(restoredArchetype, false);
 
+    setSelectedArchetype(restoredArchetype);
     setPages(restoredPages);
     setAuditMetrics(restoredMetrics);
     setIsOptimized(false);
@@ -1078,26 +1297,16 @@ export default function BarMaidDashboard() {
     try {
       localStorage.removeItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY);
       sessionStorage.removeItem(PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY);
-
-      const rawRules =
-        localStorage.getItem(RULES_CONFIG_STORAGE_KEY) ||
-        sessionStorage.getItem(RULES_CONFIG_STORAGE_KEY);
-      if (rawRules) {
-        const parsedRules = JSON.parse(rawRules) as BusinessRulesConfig;
-        const revertedRules: BusinessRulesConfig = {
-          ...parsedRules,
-          isOptimized: false,
-          optimizedGridPages: undefined,
-          preOptimizeSnapshot: null,
-          savedAt: new Date().toISOString(),
-        };
-        const serializedRules = JSON.stringify(revertedRules);
-        localStorage.setItem(RULES_CONFIG_STORAGE_KEY, serializedRules);
-        sessionStorage.setItem(RULES_CONFIG_STORAGE_KEY, serializedRules);
-      }
     } catch {
       // Ignore storage errors
     }
+
+    persistRulesConfigState({
+      activeLayoutTemplate: toTemplateStorageCode(restoredArchetype),
+      isOptimized: false,
+      optimizedGridPages: undefined,
+      preOptimizeSnapshot: null,
+    });
   };
 
   const handleAssignItemToTile = (item: StagedItem) => {
@@ -1841,7 +2050,11 @@ export default function BarMaidDashboard() {
                   </p>
                   <p className="text-xs text-emerald-400 mt-1 font-medium">
                     {isOptimized
-                      ? "16oz single-tap anchors mapped"
+                      ? selectedArchetype === "specialty"
+                        ? "Base drink families frequency-sorted"
+                        : selectedArchetype === "color-coded"
+                        ? "Station color blocks velocity-ranked"
+                        : "16oz single-tap anchors mapped"
                       : "Heuristic sizes mapped"}
                   </p>
                 </div>
@@ -1851,17 +2064,51 @@ export default function BarMaidDashboard() {
             {/* Bottom Call to Action & Auto-Optimize Controls */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
               <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
-                <div>
+                <div className="flex items-center space-x-2">
                   <span>Selected Layout Template: </span>
                   <strong className="text-amber-400 uppercase font-mono">
-                    {selectedArchetype}
+                    {toTemplateStorageCode(selectedArchetype)}
                   </strong>
+                </div>
+
+                {/* Synchronized Template Selector Pills */}
+                <div className="flex items-center space-x-1 bg-slate-950 border border-slate-800 rounded-lg p-1">
+                  {(
+                    ["fast-cash", "specialty", "color-coded"] as ArchetypeId[]
+                  ).map((arch) => (
+                    <button
+                      key={arch}
+                      type="button"
+                      onClick={() => {
+                        setSelectedArchetype(arch);
+                        applyPreset(arch);
+                      }}
+                      className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition cursor-pointer ${
+                        selectedArchetype === arch
+                          ? "bg-amber-500 text-slate-950 font-bold"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      {arch === "fast-cash"
+                        ? "Fast-Cash"
+                        : arch === "specialty"
+                        ? "Specialty"
+                        : "Color-Zoned"}
+                    </button>
+                  ))}
                 </div>
 
                 {isOptimized && (
                   <span className="px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/50 text-emerald-300 font-semibold text-xs flex items-center space-x-1.5">
                     <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-                    <span>Optimized (Saved 2.3 taps/drink)</span>
+                    <span>
+                      Optimized (Saved{" "}
+                      {Math.max(
+                        0.1,
+                        4.2 - auditMetrics.averageBaristaTaps
+                      ).toFixed(1)}{" "}
+                      taps/drink)
+                    </span>
                   </span>
                 )}
               </div>

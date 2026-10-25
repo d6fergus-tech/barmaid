@@ -123,9 +123,15 @@ export interface PersistedAuditMetrics {
   targetMet: boolean;
 }
 
+export type PersistedLayoutTemplateCode =
+  | "FAST-CASH"
+  | "SPECIALTY"
+  | "COLOR-ZONED";
+
 export interface PersistedPreOptimizeSnapshot {
   pages: PersistedGridTile[][];
   metrics: PersistedAuditMetrics;
+  activeLayoutTemplate?: PersistedLayoutTemplateCode;
   capturedAt: string;
 }
 
@@ -135,6 +141,7 @@ export interface BusinessRulesConfig {
   modifierPricing: ModifierPricingRules;
   preferredPosPreview: "square" | "clover";
   savedAt: string;
+  activeLayoutTemplate?: PersistedLayoutTemplateCode;
   isOptimized?: boolean;
   optimizedGridPages?: PersistedGridTile[][];
   preOptimizeSnapshot?: PersistedPreOptimizeSnapshot | null;
