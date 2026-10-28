@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, ChangeEvent } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, ChangeEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -18,6 +18,8 @@ import {
   type PersistedAuditMetrics,
   type PersistedLayoutTemplateCode,
   type PersistedPreOptimizeSnapshot,
+  type StudioNavigationMode,
+  type StudioHardwareFormFactor,
 } from "@/app/onboard/rules/page";
 import {
   getPosAuthStorageKey,
@@ -143,6 +145,13 @@ type GridTile = {
   label: string;
   price: string;
   color: TileColor;
+};
+
+type CategoryFolderGroup = {
+  folderName: string;
+  itemCount: number;
+  color: TileColor;
+  items: GridTile[];
 };
 
 const createEmptyPage = (pageIndex: number): GridTile[] => {
@@ -511,6 +520,15 @@ export default function BarMaidDashboard() {
     BASELINE_AUDIT_METRICS
   );
 
+  // Studio Navigation Style & Hardware Form-Factor State
+  const [navigationMode, setNavigationMode] =
+    useState<StudioNavigationMode>("flat-speed");
+  const [hardwareFormFactor, setHardwareFormFactor] =
+    useState<StudioHardwareFormFactor>("ipad-landscape");
+  const [activeCategoryFolder, setActiveCategoryFolder] = useState<
+    string | null
+  >(null);
+
   // Deployment States
   const [deployState, setDeployState] = useState<
     "idle" | "deploying" | "success"
@@ -522,8 +540,10 @@ export default function BarMaidDashboard() {
 
   const persistRulesConfigState = useCallback(
     (updates: {
-      activeLayoutTemplate: PersistedLayoutTemplateCode;
-      isOptimized: boolean;
+      activeLayoutTemplate?: PersistedLayoutTemplateCode;
+      navigationMode?: StudioNavigationMode;
+      hardwareFormFactor?: StudioHardwareFormFactor;
+      isOptimized?: boolean;
       optimizedGridPages?: GridTile[][];
       preOptimizeSnapshot?: PersistedPreOptimizeSnapshot | null;
     }) => {
@@ -585,10 +605,28 @@ export default function BarMaidDashboard() {
           },
           preferredPosPreview: existingRules.preferredPosPreview || "square",
           savedAt: new Date().toISOString(),
-          activeLayoutTemplate: updates.activeLayoutTemplate,
-          isOptimized: updates.isOptimized,
-          optimizedGridPages: updates.optimizedGridPages,
-          preOptimizeSnapshot: updates.preOptimizeSnapshot,
+          activeLayoutTemplate:
+            updates.activeLayoutTemplate ??
+            existingRules.activeLayoutTemplate ??
+            toTemplateStorageCode(selectedArchetype),
+          navigationMode:
+            updates.navigationMode ??
+            existingRules.navigationMode ??
+            navigationMode,
+          hardwareFormFactor:
+            updates.hardwareFormFactor ??
+            existingRules.hardwareFormFactor ??
+            hardwareFormFactor,
+          isOptimized:
+            updates.isOptimized ?? existingRules.isOptimized ?? isOptimized,
+          optimizedGridPages:
+            "optimizedGridPages" in updates
+              ? updates.optimizedGridPages
+              : existingRules.optimizedGridPages,
+          preOptimizeSnapshot:
+            "preOptimizeSnapshot" in updates
+              ? updates.preOptimizeSnapshot
+              : existingRules.preOptimizeSnapshot,
         };
 
         const serialized = JSON.stringify(updatedRulesConfig);
@@ -598,8 +636,29 @@ export default function BarMaidDashboard() {
         // Ignore storage quota errors
       }
     },
-    [merchantSlug]
+    [
+      hardwareFormFactor,
+      isOptimized,
+      merchantSlug,
+      navigationMode,
+      selectedArchetype,
+    ]
   );
+
+  const handleToggleNavigationMode = (mode: StudioNavigationMode) => {
+    setNavigationMode(mode);
+    if (mode === "category-folders") {
+      setActiveCategoryFolder(null);
+    }
+    persistRulesConfigState({ navigationMode: mode });
+  };
+
+  const handleToggleHardwareFormFactor = (
+    formFactor: StudioHardwareFormFactor
+  ) => {
+    setHardwareFormFactor(formFactor);
+    persistRulesConfigState({ hardwareFormFactor: formFactor });
+  };
 
   // Template switch handler: preserves optimization state across Fast-Cash, Specialty, and Color-Zoned
   const applyPreset = useCallback(
@@ -707,6 +766,13 @@ export default function BarMaidDashboard() {
 
       setMerchantSlug(resolvedSlug);
       setMerchantDisplayName(resolvedDisplayName);
+
+      if (parsedRules?.navigationMode) {
+        setNavigationMode(parsedRules.navigationMode);
+      }
+      if (parsedRules?.hardwareFormFactor) {
+        setHardwareFormFactor(parsedRules.hardwareFormFactor);
+      }
 
       // Check saved POS auth token for this merchant_slug
       if (resolvedSlug && resolvedSlug !== "unassigned") {
@@ -871,7 +937,10 @@ export default function BarMaidDashboard() {
   // Safe accessor for current page tiles
   const currentTiles = pages[activePageIndex] || pages[0] || createEmptyPage(0);
 
+  const allPagesFlatTiles = useMemo(() => pages.flat(), [pages]);
+
   const activeTile =
+    allPagesFlatTiles.find((t) => t.id === selectedTileId) ||
     currentTiles.find((t) => t.id === selectedTileId) ||
     currentTiles[0] || {
       id: 1,
@@ -880,18 +949,237 @@ export default function BarMaidDashboard() {
       color: "blank" as TileColor,
     };
 
-  const updateActiveTile = (updates: Partial<GridTile>) => {
-    setPages((prevPages) => {
-      const nextPages = [...prevPages];
-      const pageToUpdate = nextPages[activePageIndex];
-      if (!pageToUpdate) return prevPages;
-
-      nextPages[activePageIndex] = pageToUpdate.map((tile) =>
-        tile.id === activeTile.id ? { ...tile, ...updates } : tile
-      );
-      return nextPages;
-    });
+  const handleSelectTile = (tileId: number) => {
+    setSelectedTileId(tileId);
+    const ownerPageIdx = pages.findIndex((p) =>
+      p.some((tile) => tile.id === tileId)
+    );
+    if (ownerPageIdx >= 0 && ownerPageIdx !== activePageIndex) {
+      setActivePageIndex(ownerPageIdx);
+    }
   };
+
+  const updateActiveTile = (updates: Partial<GridTile>) => {
+    setPages((prevPages) =>
+      prevPages.map((page) =>
+        page.map((tile) =>
+          tile.id === activeTile.id ? { ...tile, ...updates } : tile
+        )
+      )
+    );
+  };
+
+  // SipPass-aligned canonical category folders derived dynamically from stagedItems and active pages
+  const categoryFolders = useMemo<CategoryFolderGroup[]>(() => {
+    const normalizeText = (val: string) =>
+      val
+        .toLowerCase()
+        .replace(/^\d+oz\s+/i, "")
+        .replace(/\s+\(base\)$/i, "")
+        .replace(/^\+\s+/, "")
+        .trim();
+
+    // Index staged items by normalized name so we preserve custom/extracted board categories
+    const stagedCategoryByLabel = new Map<string, string>();
+    stagedItems.forEach((item) => {
+      const rawCat = (item.categoryName || "").trim();
+      const lowerCat = rawCat.toLowerCase();
+      let canonicalCat = rawCat || "Espresso Bar & Classics";
+
+      if (lowerCat.includes("retail") || lowerCat.includes("merch")) {
+        canonicalCat = "Retail Packaged";
+      } else if (
+        lowerCat.includes("food") ||
+        lowerCat.includes("pastry") ||
+        lowerCat.includes("pastries") ||
+        lowerCat.includes("bakery") ||
+        lowerCat.includes("breakfast")
+      ) {
+        canonicalCat = "Food & Pastries";
+      } else if (
+        lowerCat.includes("energy") ||
+        lowerCat.includes("lotus") ||
+        lowerCat.includes("red bull") ||
+        lowerCat.includes("redbull") ||
+        lowerCat.includes("cold") ||
+        lowerCat.includes("iced") ||
+        lowerCat.includes("smoothie") ||
+        lowerCat.includes("boba") ||
+        lowerCat.includes("frappe") ||
+        lowerCat.includes("blended")
+      ) {
+        // Preserve distinct custom board categories (e.g. "Big Train", "Boba", "Kiddie Corner") if explicitly named,
+        // or map standard cold/energy into "Cold Bar & Energy"
+        canonicalCat =
+          rawCat &&
+          !["cold bar", "energy", "energy drinks", "iced drinks", "beverages"].includes(
+            lowerCat
+          )
+            ? rawCat
+            : "Cold Bar & Energy";
+      } else if (
+        !rawCat ||
+        ["espresso bar", "espresso", "coffee", "hot drinks", "classics", "beverages"].includes(
+          lowerCat
+        )
+      ) {
+        canonicalCat = "Espresso Bar & Classics";
+      }
+
+      stagedCategoryByLabel.set(normalizeText(item.name), canonicalCat);
+    });
+
+    const folderMap = new Map<
+      string,
+      { color: TileColor; items: GridTile[] }
+    >();
+
+    const inferCategoryForTile = (
+      tile: GridTile
+    ): { folderName: string; folderColor: TileColor } => {
+      const cleanedLabel = normalizeText(tile.label);
+
+      // Modifiers (emerald or prefixed with "+ ")
+      if (tile.color === "emerald" || tile.label.trim().startsWith("+")) {
+        return {
+          folderName: "Speed Modifiers & Add-Ons",
+          folderColor: "emerald",
+        };
+      }
+
+      // Direct match or partial match against stagedItems
+      const directStagedCat = stagedCategoryByLabel.get(cleanedLabel);
+      if (directStagedCat) {
+        const folderColor: TileColor =
+          directStagedCat === "Retail Packaged" ||
+          directStagedCat === "Food & Pastries"
+            ? "slate"
+            : directStagedCat === "Cold Bar & Energy"
+            ? "cyan"
+            : tile.color !== "blank"
+            ? tile.color
+            : "amber";
+        return { folderName: directStagedCat, folderColor };
+      }
+
+      for (const [stagedKey, catName] of stagedCategoryByLabel.entries()) {
+        if (
+          stagedKey.length > 2 &&
+          (cleanedLabel.includes(stagedKey) || stagedKey.includes(cleanedLabel))
+        ) {
+          const folderColor: TileColor =
+            catName === "Retail Packaged" || catName === "Food & Pastries"
+              ? "slate"
+              : catName === "Cold Bar & Energy"
+              ? "cyan"
+              : tile.color !== "blank"
+              ? tile.color
+              : "amber";
+          return { folderName: catName, folderColor };
+        }
+      }
+
+      // Fallback heuristics based on tile color & keywords
+      if (
+        tile.color === "cyan" ||
+        /cold|iced|lotus|energy|bull|smoothie|frappe|boba|lemonade|refresher/i.test(
+          tile.label
+        )
+      ) {
+        return { folderName: "Cold Bar & Energy", folderColor: "cyan" };
+      }
+      if (
+        /bagel|muffin|croissant|burrito|ciabatta|cookie|scone|toast|sandwich|food|pastry/i.test(
+          tile.label
+        )
+      ) {
+        return { folderName: "Food & Pastries", folderColor: "slate" };
+      }
+      if (tile.color === "slate") {
+        return { folderName: "Retail Packaged", folderColor: "slate" };
+      }
+
+      return { folderName: "Espresso Bar & Classics", folderColor: "amber" };
+    };
+
+    const assignedTiles = allPagesFlatTiles.filter(
+      (t) =>
+        t.color !== "blank" &&
+        t.label.trim() !== "" &&
+        t.label !== "[Empty Slot]" &&
+        t.label !== "[Open Slot]"
+    );
+
+    assignedTiles.forEach((tile) => {
+      const { folderName, folderColor } = inferCategoryForTile(tile);
+      const existing = folderMap.get(folderName);
+      if (existing) {
+        existing.items.push(tile);
+      } else {
+        folderMap.set(folderName, { color: folderColor, items: [tile] });
+      }
+    });
+
+    // If no tiles are assigned yet, still surface the canonical SipPass category shells
+    if (folderMap.size === 0) {
+      return [
+        {
+          folderName: "Espresso Bar & Classics",
+          itemCount: 0,
+          color: "amber",
+          items: [],
+        },
+        {
+          folderName: "Cold Bar & Energy",
+          itemCount: 0,
+          color: "cyan",
+          items: [],
+        },
+        {
+          folderName: "Food & Pastries",
+          itemCount: 0,
+          color: "slate",
+          items: [],
+        },
+        {
+          folderName: "Retail Packaged",
+          itemCount: 0,
+          color: "slate",
+          items: [],
+        },
+        {
+          folderName: "Speed Modifiers & Add-Ons",
+          itemCount: 0,
+          color: "emerald",
+          items: [],
+        },
+      ];
+    }
+
+    const canonicalOrder = [
+      "Espresso Bar & Classics",
+      "Cold Bar & Energy",
+      "Food & Pastries",
+      "Retail Packaged",
+      "Speed Modifiers & Add-Ons",
+    ];
+
+    return Array.from(folderMap.entries())
+      .map(([folderName, data]) => ({
+        folderName,
+        itemCount: data.items.length,
+        color: data.color,
+        items: data.items,
+      }))
+      .sort((a, b) => {
+        const idxA = canonicalOrder.indexOf(a.folderName);
+        const idxB = canonicalOrder.indexOf(b.folderName);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return a.folderName.localeCompare(b.folderName);
+      });
+  }, [allPagesFlatTiles, stagedItems]);
 
   // Clear single active tile
   const handleClearCurrentTile = () => {
@@ -2220,76 +2508,486 @@ export default function BarMaidDashboard() {
               </div>
             </div>
 
+            {/* Navigation Style & Hardware Screen Toggles Toolbar */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-4">
+              {/* Toggle 1: Navigation Style */}
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400">
+                  Navigation Style:
+                </span>
+                <div className="inline-flex items-center bg-slate-950 border border-slate-800 rounded-lg p-1">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleNavigationMode("flat-speed")}
+                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
+                      navigationMode === "flat-speed"
+                        ? "bg-amber-500 text-slate-950 font-bold shadow-sm"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <span>⚡ Flat Speed Grid</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleToggleNavigationMode("category-folders")
+                    }
+                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
+                      navigationMode === "category-folders"
+                        ? "bg-amber-500 text-slate-950 font-bold shadow-sm"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <span>📁 Category-First (SipPass)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Toggle 2: Hardware Screen Form-Factor */}
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400">
+                  Hardware Screen:
+                </span>
+                <div className="inline-flex items-center bg-slate-950 border border-slate-800 rounded-lg p-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleToggleHardwareFormFactor("ipad-landscape")
+                    }
+                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
+                      hardwareFormFactor === "ipad-landscape"
+                        ? "bg-amber-500 text-slate-950 font-bold shadow-sm"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <span>🖥️ iPad Stand (5×4)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleToggleHardwareFormFactor("terminal-portrait")
+                    }
+                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
+                      hardwareFormFactor === "terminal-portrait"
+                        ? "bg-amber-500 text-slate-950 font-bold shadow-sm"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <span>📱 Square Terminal (Portrait)</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* Layout Workspace: Elastic Pages + Inspector Sidebar */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Virtual iPad Register Grid (2/3 width) */}
+              {/* Virtual POS Register Canvas (2/3 width) */}
               <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl flex flex-col justify-between">
                 <div>
-                  {/* Dynamic Page Tabs */}
-                  <div className="flex flex-wrap items-center justify-between pb-4 border-b border-slate-800/80 mb-4 gap-2">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {pages.map((_, pIdx) => {
-                        const start = pIdx * 20 + 1;
-                        const end = start + 19;
-                        const isCurrent = activePageIndex === pIdx;
-                        return (
+                  {/* Top Bar: Either Dynamic Page Tabs (Flat Mode) or SipPass Category Sync Header (Folder Mode) */}
+                  {navigationMode === "flat-speed" ? (
+                    <div className="flex flex-wrap items-center justify-between pb-4 border-b border-slate-800/80 mb-4 gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {pages.map((_, pIdx) => {
+                          const start = pIdx * 20 + 1;
+                          const end = start + 19;
+                          const isCurrent = activePageIndex === pIdx;
+                          return (
+                            <button
+                              key={pIdx}
+                              onClick={() => {
+                                setActivePageIndex(pIdx);
+                                setSelectedTileId(
+                                  pages[pIdx]?.[0]?.id || start
+                                );
+                              }}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                                isCurrent
+                                  ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20"
+                                  : "bg-slate-800 text-slate-400 hover:text-white"
+                              }`}
+                            >
+                              Page {pIdx + 1} ({start}–{end})
+                            </button>
+                          );
+                        })}
+
+                        <button
+                          onClick={handleAddPage}
+                          title="Add an additional empty 20-slot page"
+                          className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-950 hover:bg-slate-800 border border-dashed border-slate-700 text-amber-400 hover:text-amber-300 transition cursor-pointer"
+                        >
+                          + Add Page
+                        </button>
+                      </div>
+
+                      <span className="text-xs text-slate-400 font-mono">
+                        Page {activePageIndex + 1} of {pages.length} •{" "}
+                        {hardwareFormFactor === "ipad-landscape"
+                          ? "5×4 Landscape"
+                          : "3-Col Terminal"}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between pb-4 border-b border-slate-800/80 mb-4 gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2.5 py-1 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-bold">
+                          SipPass Canonical Folders
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          {categoryFolders.length} Category Groups •{" "}
+                          {totalAssignedTiles} Assigned Items
+                        </span>
+                      </div>
+                      {activeCategoryFolder !== null && (
+                        <button
+                          type="button"
+                          onClick={() => setActiveCategoryFolder(null)}
+                          className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 text-xs font-semibold transition cursor-pointer"
+                        >
+                          ← All Categories
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Hardware Frame Renderer */}
+                  {hardwareFormFactor === "ipad-landscape" ? (
+                    /* iPad Stand (5x4 Landscape) Frame */
+                    <div className="bg-slate-950/70 border-2 border-slate-800 rounded-2xl p-4 shadow-inner">
+                      {/* iPad Top Status Strip */}
+                      <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 pb-3 mb-3 border-b border-slate-800/80">
+                        <span>SQUARE POS • IPAD PRO 12.9&quot; STAND</span>
+                        <span>
+                          {navigationMode === "flat-speed"
+                            ? "FLAT SPEED GRID (5×4)"
+                            : activeCategoryFolder
+                            ? `FOLDER: ${activeCategoryFolder.toUpperCase()}`
+                            : "CATEGORY-FIRST (SIPPASS FOLDERS)"}
+                        </span>
+                        <span className="text-emerald-400">● ONLINE</span>
+                      </div>
+
+                      {navigationMode === "flat-speed" ? (
+                        <div className="grid grid-cols-5 gap-2.5">
+                          {currentTiles.map((tile) => {
+                            const isSelected = tile.id === activeTile.id;
+                            return (
+                              <button
+                                key={tile.id}
+                                onClick={() => handleSelectTile(tile.id)}
+                                className={`h-20 sm:h-24 p-2 rounded-xl border flex flex-col justify-between text-left transition-all duration-150 cursor-pointer ${getColorClasses(
+                                  tile.color
+                                )} ${
+                                  isSelected
+                                    ? "ring-2 ring-white ring-offset-2 ring-offset-slate-950 scale-[1.02] shadow-lg"
+                                    : "opacity-95"
+                                }`}
+                              >
+                                <span className="text-xs font-bold leading-tight line-clamp-2">
+                                  {tile.label}
+                                </span>
+                                <span className="text-[11px] font-mono font-medium opacity-80">
+                                  {tile.price}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : activeCategoryFolder === null ? (
+                        /* Top-Level Category Folders View (iPad 5-col) */
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 py-2">
+                          {categoryFolders.map((folder) => (
+                            <button
+                              key={folder.folderName}
+                              type="button"
+                              onClick={() =>
+                                setActiveCategoryFolder(folder.folderName)
+                              }
+                              className={`h-28 p-3.5 rounded-xl border-2 flex flex-col justify-between text-left transition-all duration-150 hover:scale-[1.02] cursor-pointer shadow-lg ${getColorClasses(
+                                folder.color
+                              )}`}
+                            >
+                              <div className="flex items-center justify-between w-full">
+                                <span className="text-lg">📁</span>
+                                <span className="px-2 py-0.5 rounded-full bg-slate-950/30 text-[10px] font-mono font-bold">
+                                  {folder.itemCount}{" "}
+                                  {folder.itemCount === 1 ? "item" : "items"}
+                                </span>
+                              </div>
+                              <div>
+                                <p className="text-xs font-extrabold leading-snug line-clamp-2">
+                                  {folder.folderName}
+                                </p>
+                                <p className="text-[10px] font-mono opacity-80 mt-0.5">
+                                  Tap to open →
+                                </p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        /* Drilled-in Category Folder Items View (iPad 5-col) */
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5">
+                            <div className="flex items-center gap-2.5">
+                              <button
+                                type="button"
+                                onClick={() => setActiveCategoryFolder(null)}
+                                className="px-2.5 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold text-xs hover:bg-amber-400 transition cursor-pointer"
+                              >
+                                ← All Categories
+                              </button>
+                              <span className="text-slate-600">/</span>
+                              <span className="text-sm font-bold text-white">
+                                📁 {activeCategoryFolder}
+                              </span>
+                            </div>
+                            <span className="text-xs font-mono text-amber-400">
+                              {categoryFolders.find(
+                                (f) => f.folderName === activeCategoryFolder
+                              )?.itemCount || 0}{" "}
+                              items
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-5 gap-2.5">
+                            {(
+                              categoryFolders.find(
+                                (f) => f.folderName === activeCategoryFolder
+                              )?.items || []
+                            ).map((tile) => {
+                              const isSelected = tile.id === activeTile.id;
+                              return (
+                                <button
+                                  key={tile.id}
+                                  type="button"
+                                  onClick={() => handleSelectTile(tile.id)}
+                                  className={`h-20 sm:h-24 p-2 rounded-xl border flex flex-col justify-between text-left transition-all duration-150 cursor-pointer ${getColorClasses(
+                                    tile.color
+                                  )} ${
+                                    isSelected
+                                      ? "ring-2 ring-white ring-offset-2 ring-offset-slate-950 scale-[1.02] shadow-lg"
+                                      : "opacity-95"
+                                  }`}
+                                >
+                                  <span className="text-xs font-bold leading-tight line-clamp-2">
+                                    {tile.label}
+                                  </span>
+                                  <div className="flex items-center justify-between w-full">
+                                    <span className="text-[11px] font-mono font-medium opacity-80">
+                                      {tile.price}
+                                    </span>
+                                    <span className="text-[9px] font-mono opacity-60">
+                                      #{tile.id}
+                                    </span>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    /* Square Terminal (Portrait) Hardware Frame */
+                    <div className="max-w-[420px] mx-auto w-full bg-gradient-to-b from-slate-100 via-slate-200 to-slate-300 border-4 border-slate-300/90 rounded-[2.25rem] p-3.5 shadow-2xl">
+                      {/* Angled Top Bezel + Card Dip Slot */}
+                      <div className="flex flex-col items-center pb-2.5">
+                        <div className="w-28 h-1.5 rounded-full bg-slate-400/80 mb-1" />
+                        <span className="text-[9px] font-mono uppercase tracking-widest text-slate-600 font-bold">
+                          Square Terminal • Handheld POS
+                        </span>
+                      </div>
+
+                      {/* Inner Portrait Touchscreen */}
+                      <div className="bg-slate-950 rounded-2xl overflow-hidden border border-slate-800 shadow-inner flex flex-col">
+                        {/* Top Dark Status Bar */}
+                        <div className="bg-slate-900 px-3.5 py-2 border-b border-slate-800 flex items-center justify-between text-[10px] font-mono text-slate-300">
+                          <span className="font-bold">9:41 AM</span>
+                          <span className="text-amber-400 font-semibold truncate max-w-[160px]">
+                            {merchantDisplayName}
+                          </span>
+                          <span className="text-emerald-400">Wi-Fi • 100%</span>
+                        </div>
+
+                        {/* Current Sale Charge Banner */}
+                        <div className="bg-slate-900/60 px-3.5 py-2 border-b border-slate-800/80 flex items-center justify-between">
+                          <div>
+                            <span className="text-[10px] uppercase font-mono text-slate-400 block">
+                              Current Ticket
+                            </span>
+                            <span className="text-xs font-bold text-white">
+                              {activeTile &&
+                              activeTile.color !== "blank" &&
+                              activeTile.label !== "[Empty Slot]"
+                                ? activeTile.label
+                                : "Tap item to ring"}
+                            </span>
+                          </div>
+                          <span className="px-2.5 py-1 rounded-lg bg-amber-500 text-slate-950 font-mono font-bold text-xs">
+                            Charge {activeTile?.price || "$0.00"}
+                          </span>
+                        </div>
+
+                        {/* 3-Column Thumb-Friendly Grid Area */}
+                        <div className="p-3 min-h-[340px] max-h-[420px] overflow-y-auto">
+                          {navigationMode === "flat-speed" ? (
+                            <div className="grid grid-cols-3 gap-2">
+                              {currentTiles.map((tile) => {
+                                const isSelected = tile.id === activeTile.id;
+                                return (
+                                  <button
+                                    key={tile.id}
+                                    type="button"
+                                    onClick={() => handleSelectTile(tile.id)}
+                                    className={`h-20 p-2 rounded-xl border flex flex-col justify-between text-left transition-all duration-150 cursor-pointer ${getColorClasses(
+                                      tile.color
+                                    )} ${
+                                      isSelected
+                                        ? "ring-2 ring-white ring-offset-2 ring-offset-slate-950 scale-[1.02] shadow-lg"
+                                        : "opacity-95"
+                                    }`}
+                                  >
+                                    <span className="text-[11px] font-bold leading-tight line-clamp-2">
+                                      {tile.label}
+                                    </span>
+                                    <span className="text-[10px] font-mono font-medium opacity-80">
+                                      {tile.price}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : activeCategoryFolder === null ? (
+                            /* Top-Level Category Folders View (Terminal 3-col) */
+                            <div className="grid grid-cols-2 gap-2.5">
+                              {categoryFolders.map((folder) => (
+                                <button
+                                  key={folder.folderName}
+                                  type="button"
+                                  onClick={() =>
+                                    setActiveCategoryFolder(folder.folderName)
+                                  }
+                                  className={`h-24 p-3 rounded-xl border-2 flex flex-col justify-between text-left transition-all duration-150 hover:scale-[1.02] cursor-pointer shadow-md ${getColorClasses(
+                                    folder.color
+                                  )}`}
+                                >
+                                  <div className="flex items-center justify-between w-full">
+                                    <span className="text-base">📁</span>
+                                    <span className="px-1.5 py-0.5 rounded-full bg-slate-950/30 text-[10px] font-mono font-bold">
+                                      {folder.itemCount} items
+                                    </span>
+                                  </div>
+                                  <p className="text-xs font-extrabold leading-tight line-clamp-2">
+                                    {folder.folderName}
+                                  </p>
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            /* Drilled-in Category Folder Items View (Terminal 3-col) */
+                            <div className="space-y-2.5">
+                              <div className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveCategoryFolder(null)}
+                                  className="px-2 py-1 rounded bg-amber-500 text-slate-950 font-bold text-[11px] hover:bg-amber-400 transition cursor-pointer"
+                                >
+                                  ← All Categories
+                                </button>
+                                <span className="text-xs font-bold text-white truncate max-w-[150px]">
+                                  {activeCategoryFolder}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-3 gap-2">
+                                {(
+                                  categoryFolders.find(
+                                    (f) => f.folderName === activeCategoryFolder
+                                  )?.items || []
+                                ).map((tile) => {
+                                  const isSelected = tile.id === activeTile.id;
+                                  return (
+                                    <button
+                                      key={tile.id}
+                                      type="button"
+                                      onClick={() => handleSelectTile(tile.id)}
+                                      className={`h-20 p-2 rounded-xl border flex flex-col justify-between text-left transition-all duration-150 cursor-pointer ${getColorClasses(
+                                        tile.color
+                                      )} ${
+                                        isSelected
+                                          ? "ring-2 ring-white ring-offset-2 ring-offset-slate-950 scale-[1.02] shadow-lg"
+                                          : "opacity-95"
+                                      }`}
+                                    >
+                                      <span className="text-[11px] font-bold leading-tight line-clamp-2">
+                                        {tile.label}
+                                      </span>
+                                      <span className="text-[10px] font-mono font-medium opacity-80">
+                                        {tile.price}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Square Terminal Bottom Navigation Bar */}
+                        <div className="bg-slate-900 border-t border-slate-800 px-4 py-2.5 grid grid-cols-3 text-center text-[10px] font-mono">
                           <button
-                            key={pIdx}
-                            onClick={() => {
-                              setActivePageIndex(pIdx);
-                              setSelectedTileId(pages[pIdx]?.[0]?.id || start);
-                            }}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                              isCurrent
-                                ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20"
-                                : "bg-slate-800 text-slate-400 hover:text-white"
+                            type="button"
+                            onClick={() =>
+                              handleToggleNavigationMode("flat-speed")
+                            }
+                            className={`flex flex-col items-center gap-0.5 cursor-pointer ${
+                              navigationMode === "flat-speed"
+                                ? "text-amber-400 font-bold"
+                                : "text-slate-400 hover:text-white"
                             }`}
                           >
-                            Page {pIdx + 1} ({start}–{end})
+                            <span>⌨️</span>
+                            <span>Keypad</span>
                           </button>
-                        );
-                      })}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleToggleNavigationMode("category-folders")
+                            }
+                            className={`flex flex-col items-center gap-0.5 cursor-pointer ${
+                              navigationMode === "category-folders"
+                                ? "text-amber-400 font-bold"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            <span>📚</span>
+                            <span>Library</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleToggleNavigationMode("flat-speed");
+                              setActivePageIndex(0);
+                            }}
+                            className="flex flex-col items-center gap-0.5 text-slate-400 hover:text-white cursor-pointer"
+                          >
+                            <span>⭐</span>
+                            <span>Favorites</span>
+                          </button>
+                        </div>
+                      </div>
 
-                      <button
-                        onClick={handleAddPage}
-                        title="Add an additional empty 20-slot page"
-                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-950 hover:bg-slate-800 border border-dashed border-slate-700 text-amber-400 hover:text-amber-300 transition cursor-pointer"
-                      >
-                        + Add Page
-                      </button>
+                      {/* Built-in Thermal Receipt Printer Slot Indicator at Bottom Bezel */}
+                      <div className="pt-3 pb-1 flex flex-col items-center">
+                        <div className="w-48 h-1.5 rounded-full bg-slate-500/80 shadow-inner" />
+                        <span className="text-[9px] font-mono uppercase tracking-wider text-slate-600 mt-1">
+                          Thermal Receipt Printer Seam
+                        </span>
+                      </div>
                     </div>
-
-                    <span className="text-xs text-slate-400 font-mono">
-                      Page {activePageIndex + 1} of {pages.length}
-                    </span>
-                  </div>
-
-                  {/* 20-Tile 5x4 Grid for Current Active Page */}
-                  <div className="grid grid-cols-5 gap-2.5">
-                    {currentTiles.map((tile) => {
-                      const isSelected = tile.id === activeTile.id;
-                      return (
-                        <button
-                          key={tile.id}
-                          onClick={() => setSelectedTileId(tile.id)}
-                          className={`h-20 sm:h-24 p-2 rounded-xl border flex flex-col justify-between text-left transition-all duration-150 cursor-pointer ${getColorClasses(
-                            tile.color
-                          )} ${
-                            isSelected
-                              ? "ring-2 ring-white ring-offset-2 ring-offset-slate-950 scale-[1.02] shadow-lg"
-                              : "opacity-95"
-                          }`}
-                        >
-                          <span className="text-xs font-bold leading-tight line-clamp-2">
-                            {tile.label}
-                          </span>
-                          <span className="text-[11px] font-mono font-medium opacity-80">
-                            {tile.price}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  )}
                 </div>
 
                 {/* Studio Live Diagnostics Footprint */}

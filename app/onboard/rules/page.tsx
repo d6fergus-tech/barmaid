@@ -128,6 +128,9 @@ export type PersistedLayoutTemplateCode =
   | "SPECIALTY"
   | "COLOR-ZONED";
 
+export type StudioNavigationMode = "flat-speed" | "category-folders";
+export type StudioHardwareFormFactor = "ipad-landscape" | "terminal-portrait";
+
 export interface PersistedPreOptimizeSnapshot {
   pages: PersistedGridTile[][];
   metrics: PersistedAuditMetrics;
@@ -142,6 +145,8 @@ export interface BusinessRulesConfig {
   preferredPosPreview: "square" | "clover";
   savedAt: string;
   activeLayoutTemplate?: PersistedLayoutTemplateCode;
+  navigationMode?: StudioNavigationMode;
+  hardwareFormFactor?: StudioHardwareFormFactor;
   isOptimized?: boolean;
   optimizedGridPages?: PersistedGridTile[][];
   preOptimizeSnapshot?: PersistedPreOptimizeSnapshot | null;
@@ -849,7 +854,20 @@ export default function OnboardingRulesStepPage() {
 
   // Save Rules & Continue to Step 3: POS Connect
   const handleSaveRulesAndContinue = () => {
+    let existingRules: Partial<BusinessRulesConfig> = {};
+    try {
+      const rawExisting =
+        localStorage.getItem(RULES_CONFIG_STORAGE_KEY) ||
+        sessionStorage.getItem(RULES_CONFIG_STORAGE_KEY);
+      if (rawExisting) {
+        existingRules = JSON.parse(rawExisting) as Partial<BusinessRulesConfig>;
+      }
+    } catch {
+      // Ignore parse errors
+    }
+
     const configPayload: BusinessRulesConfig = {
+      ...existingRules,
       merchant_slug: resolvedSlug,
       sizeMatrix,
       modifierPricing,
