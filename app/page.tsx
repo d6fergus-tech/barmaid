@@ -151,6 +151,7 @@ type GridTile = {
   label: string;
   price: string;
   color: TileColor;
+  categoryName?: string;
 };
 
 type CategoryFolderGroup = {
@@ -171,6 +172,24 @@ const createEmptyPage = (pageIndex: number): GridTile[] => {
 };
 
 const getItemColor = (name: string, categoryName?: string): TileColor => {
+  const lowerCat = (categoryName || "").trim().toLowerCase();
+  if (lowerCat === "bakery & food" || lowerCat === "food & pastries") {
+    return "emerald";
+  }
+  if (lowerCat === "espresso classics" || lowerCat === "hot espresso bar") {
+    return "amber";
+  }
+  if (
+    lowerCat === "cold bar & blended" ||
+    lowerCat === "energy & lotus" ||
+    lowerCat === "teas & refreshers"
+  ) {
+    return "cyan";
+  }
+  if (lowerCat === "retail & packaged" || lowerCat === "retail packaged") {
+    return "slate";
+  }
+
   const combined = `${name} ${categoryName || ""}`;
   if (/retail|bean|merch|bagged/i.test(combined)) {
     return "slate";
@@ -213,6 +232,7 @@ const buildPagesFromCatalog = (
     label: string;
     price: string;
     color: TileColor;
+    categoryName?: string;
   }> = sorted.map((item) => {
     const primaryVar = item.variations[0];
     const hasMultipleSizes = item.variations.length > 1;
@@ -233,6 +253,7 @@ const buildPagesFromCatalog = (
       label,
       price,
       color: getItemColor(item.name, item.categoryName),
+      categoryName: item.categoryName,
     };
   });
 
@@ -268,6 +289,7 @@ const buildPagesFromCatalog = (
         label: entry.label,
         price: entry.price,
         color: entry.color,
+        categoryName: entry.categoryName,
       };
     });
 
@@ -377,6 +399,7 @@ const buildAutoOptimizedPages = (
     label: string;
     price: string;
     color: TileColor;
+    categoryName?: string;
   }> = sortedItems.map((item) => {
     const color = getItemColor(item.name, item.categoryName);
     const isBeverage = color === "amber" || color === "cyan";
@@ -400,6 +423,7 @@ const buildAutoOptimizedPages = (
             ? "Select Size"
             : `$${resolvedBasePrice.toFixed(2)}`,
         color,
+        categoryName: item.categoryName,
       };
     }
 
@@ -412,6 +436,7 @@ const buildAutoOptimizedPages = (
             ? `$${resolvedBasePrice.toFixed(2)}+`
             : `$${resolvedBasePrice.toFixed(2)}`,
         color,
+        categoryName: item.categoryName,
       };
     }
 
@@ -420,6 +445,7 @@ const buildAutoOptimizedPages = (
       label: isBeverage ? `16oz ${cleanName}` : cleanName,
       price: `$${resolvedSixteenPrice.toFixed(2)}`,
       color,
+      categoryName: item.categoryName,
     };
   });
 
@@ -463,6 +489,7 @@ const buildAutoOptimizedPages = (
         label: entry.label,
         price: entry.price,
         color: entry.color,
+        categoryName: entry.categoryName,
       };
     });
 
@@ -996,6 +1023,159 @@ export default function BarMaidDashboard() {
     );
   };
 
+  // Link Station Color Changes in Tile Inspector to Category Assignment & Underlying Catalog State
+  const handleStationColorChange = (color: TileColor) => {
+    const normalizeLabel = (val: string) =>
+      val
+        .toLowerCase()
+        .replace(/^\d+oz\s+/i, "")
+        .replace(/\s+\(base\)$/i, "")
+        .replace(/^\+\s+/, "")
+        .trim();
+
+    let targetCategoryName: string | undefined;
+    let targetClassification:
+      | "drink"
+      | "food"
+      | "retail_item"
+      | "modifier_option"
+      | "operational_supply"
+      | undefined;
+
+    if (color === "emerald") {
+      targetCategoryName = "Bakery & Food";
+      targetClassification = "food";
+    } else if (color === "amber") {
+      targetCategoryName = "Espresso Classics";
+      targetClassification = "drink";
+    } else if (color === "cyan") {
+      targetCategoryName = "Cold Bar & Blended";
+      targetClassification = "drink";
+    } else if (color === "slate") {
+      targetCategoryName = "Retail & Packaged";
+      targetClassification = "retail_item";
+    } else {
+      targetCategoryName = undefined;
+    }
+
+    // 1. Update active tile in pages state (both color and categoryName)
+    updateActiveTile({
+      color,
+      categoryName: targetCategoryName,
+    });
+
+    if (!targetCategoryName || !activeTile.label) {
+      return;
+    }
+
+    const cleanedActiveLabel = normalizeLabel(activeTile.label);
+    if (
+      !cleanedActiveLabel ||
+      activeTile.label === "[Empty Slot]" ||
+      activeTile.label === "[Open Slot]"
+    ) {
+      return;
+    }
+
+    // 2. Update matching item in stagedItems so Category-First grouping moves the tile immediately
+    setStagedItems((prevItems) =>
+      prevItems.map((item) => {
+        const cleanedItemName = normalizeLabel(item.name);
+        const isMatch =
+          cleanedItemName === cleanedActiveLabel ||
+          (cleanedItemName.length > 2 &&
+            (cleanedActiveLabel.includes(cleanedItemName) ||
+              cleanedItemName.includes(cleanedActiveLabel)));
+        if (!isMatch) return item;
+        return {
+          ...item,
+          categoryName: targetCategoryName,
+          classification: targetClassification || item.classification,
+        };
+      })
+    );
+
+    // 3. Persist updated category/classification to barmaid_intake_stage in localStorage/sessionStorage
+    try {
+      const rawStage =
+        localStorage.getItem(INTAKE_STAGE_STORAGE_KEY) ||
+        sessionStorage.getItem(INTAKE_STAGE_STORAGE_KEY);
+      if (rawStage) {
+        const parsedStage = JSON.parse(rawStage) as IntakeStageData;
+        let stageUpdated = false;
+
+        if (Array.isArray(parsedStage.stagedItems)) {
+          parsedStage.stagedItems = parsedStage.stagedItems.map((item) => {
+            const cleanedItemName = normalizeLabel(item.name);
+            const isMatch =
+              cleanedItemName === cleanedActiveLabel ||
+              (cleanedItemName.length > 2 &&
+                (cleanedActiveLabel.includes(cleanedItemName) ||
+                  cleanedItemName.includes(cleanedActiveLabel)));
+            if (!isMatch) return item;
+            stageUpdated = true;
+            return {
+              ...item,
+              categoryName: targetCategoryName,
+              classification:
+                targetClassification === "food" ? "food" : "drink",
+            };
+          });
+        }
+
+        // If item was in retailItems and reassigned to food or drink, move it to stagedItems
+        if (
+          !stageUpdated &&
+          Array.isArray(parsedStage.retailItems) &&
+          targetClassification &&
+          targetClassification !== "retail_item"
+        ) {
+          const retailIdx = parsedStage.retailItems.findIndex((r) => {
+            const cleanedRetailName = normalizeLabel(r.name);
+            return (
+              cleanedRetailName === cleanedActiveLabel ||
+              (cleanedRetailName.length > 2 &&
+                (cleanedActiveLabel.includes(cleanedRetailName) ||
+                  cleanedRetailName.includes(cleanedActiveLabel)))
+            );
+          });
+          if (retailIdx >= 0) {
+            const [movedRetail] = parsedStage.retailItems.splice(retailIdx, 1);
+            const priceDollars =
+              movedRetail.suggestedPriceCents &&
+              movedRetail.suggestedPriceCents > 0
+                ? movedRetail.suggestedPriceCents / 100
+                : 14.0;
+            parsedStage.stagedItems = [
+              ...(parsedStage.stagedItems || []),
+              {
+                id: movedRetail.id || `reassigned-${Date.now()}`,
+                name: movedRetail.name,
+                categoryName: targetCategoryName,
+                variations: [
+                  { size: movedRetail.sku || "Unit", price: priceDollars },
+                ],
+                included: true,
+                classification:
+                  targetClassification === "food" ? "food" : "drink",
+                sourceFileName: movedRetail.sourceFileName || "studio",
+              },
+            ];
+            stageUpdated = true;
+          }
+        }
+
+        if (stageUpdated) {
+          const serialized = JSON.stringify(parsedStage);
+          localStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serialized);
+          sessionStorage.setItem(INTAKE_STAGE_STORAGE_KEY, serialized);
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
   // SipPass-aligned canonical category folders derived dynamically from stagedItems and active pages
   const categoryFolders = useMemo<CategoryFolderGroup[]>(() => {
     const normalizeText = (val: string) =>
@@ -1061,18 +1241,32 @@ export default function BarMaidDashboard() {
       const lowerCat = trimmedRawCat.toLowerCase();
       const combined = `${itemName} ${trimmedRawCat}`.toLowerCase();
 
+      // 0. Top priority: Explicit Canonical SipPass Category assignment (e.g. from Station Color Coding override)
+      if (lowerCat === "bakery & food") {
+        return { folderName: "Bakery & Food", folderColor: "emerald" };
+      }
+      if (
+        lowerCat === "espresso classics" ||
+        lowerCat === "hot espresso bar"
+      ) {
+        return { folderName: "Espresso Classics", folderColor: "amber" };
+      }
+      if (lowerCat === "cold bar & blended") {
+        return { folderName: "Cold Bar & Blended", folderColor: "cyan" };
+      }
+      if (lowerCat === "energy & lotus") {
+        return { folderName: "Energy & Lotus", folderColor: "cyan" };
+      }
+      if (lowerCat === "teas & refreshers") {
+        return { folderName: "Teas & Refreshers", folderColor: "cyan" };
+      }
+      if (lowerCat === "retail & packaged") {
+        return { folderName: "Retail & Packaged", folderColor: "slate" };
+      }
+
       // 1. Check if item has a specific extracted board categoryName (e.g. "Signature Mochas", "Kiddie Corner")
       const isSpecificBoardCategory =
-        trimmedRawCat.length > 0 &&
-        !GENERIC_CATCHALL_CATEGORIES.has(lowerCat) &&
-        ![
-          "espresso classics",
-          "energy & lotus",
-          "cold bar & blended",
-          "teas & refreshers",
-          "bakery & food",
-          "retail & packaged",
-        ].includes(lowerCat);
+        trimmedRawCat.length > 0 && !GENERIC_CATCHALL_CATEGORIES.has(lowerCat);
 
       if (isSpecificBoardCategory) {
         let boardColor: TileColor = "amber";
@@ -1099,10 +1293,14 @@ export default function BarMaidDashboard() {
       }
 
       // 2. Canonical SipPass Customer-Facing Menu Families
+      // Family 5: Bakery & Food ("emerald") checked before retail if classification === "food"
+      if (classification === "food") {
+        return { folderName: "Bakery & Food", folderColor: "emerald" };
+      }
+
       // Family 6: Retail & Packaged ("slate")
       if (
         classification === "retail_item" ||
-        lowerCat === "retail & packaged" ||
         /whole bean|coffee bean|12oz bag|1lb bag|5lb bag|retail|merch|tumbler|mug|shirt|hoodie|sticker|gift card|packaged|bagged/i.test(
           combined
         )
@@ -1110,10 +1308,7 @@ export default function BarMaidDashboard() {
         return { folderName: "Retail & Packaged", folderColor: "slate" };
       }
 
-      // Family 5: Bakery & Food ("emerald")
       if (
-        classification === "food" ||
-        lowerCat === "bakery & food" ||
         /sandwich|bagel|muffin|pastry|pastries|cookie|scone|croissant|burrito|ciabatta|toast|pretzel|biscotti|cake|danish|donut|doughnut|wrap|panini|quiche|waffle|oatmeal|egg bite|food|bakery/i.test(
           combined
         )
@@ -1123,7 +1318,6 @@ export default function BarMaidDashboard() {
 
       // Family 2: Energy & Lotus ("cyan")
       if (
-        lowerCat === "energy & lotus" ||
         /lotus|red\s*bull|redbull|energy|rebel|infusion|italian soda|\bsoda\b|spritzer|rockstar|monster|bull|charger|fizz/i.test(
           combined
         )
@@ -1133,7 +1327,6 @@ export default function BarMaidDashboard() {
 
       // Family 4: Teas & Refreshers ("cyan")
       if (
-        lowerCat === "teas & refreshers" ||
         /\btea\b|chai|matcha|lemonade|refresher|london fog|arnold palmer|palmer|earl grey|chamomile|hibiscus|green tea|black tea|herbal/i.test(
           combined
         )
@@ -1143,7 +1336,6 @@ export default function BarMaidDashboard() {
 
       // Family 3: Cold Bar & Blended ("cyan")
       if (
-        lowerCat === "cold bar & blended" ||
         /frappe|frappuccino|smoothie|blended|boba|bubble|milkshake|shake|freeze|granita|slush|big train|frost|cooler|iced specialty|cold foam/i.test(
           combined
         )
@@ -1221,8 +1413,10 @@ export default function BarMaidDashboard() {
         return;
       }
 
-      const { folderName, folderColor } =
-        matchedMeta || classifyIntoSipPassFamily(rawLabel);
+      // If tile has an explicit categoryName override (e.g. set via Station Color Coding in Tile Inspector), prioritize it
+      const { folderName, folderColor } = tile.categoryName
+        ? classifyIntoSipPassFamily(rawLabel, tile.categoryName)
+        : matchedMeta || classifyIntoSipPassFamily(rawLabel);
 
       const existing = folderMap.get(folderName);
       if (existing) {
@@ -1241,7 +1435,7 @@ export default function BarMaidDashboard() {
       "Retail & Packaged",
     ];
 
-    // Suppress any empty category folders that have 0 items
+      // Suppress any empty category folders that have 0 items
     return Array.from(folderMap.entries())
       .filter(([, data]) => data.items.length > 0)
       .map(([folderName, data]) => ({
@@ -1260,12 +1454,23 @@ export default function BarMaidDashboard() {
       });
   }, [allPagesFlatTiles, stagedItems, stagedModifiers]);
 
+  // If the last item in the currently viewed category folder was reassigned to a different folder, return cleanly to All Categories
+  useEffect(() => {
+    if (
+      activeCategoryFolder !== null &&
+      !categoryFolders.some((f) => f.folderName === activeCategoryFolder)
+    ) {
+      setActiveCategoryFolder(null);
+    }
+  }, [activeCategoryFolder, categoryFolders]);
+
   // Clear single active tile
   const handleClearCurrentTile = () => {
     updateActiveTile({
       label: "[Empty Slot]",
       price: "",
       color: "blank",
+      categoryName: undefined,
     });
   };
 
@@ -1682,6 +1887,7 @@ export default function BarMaidDashboard() {
       label: `${primaryVar?.size ? primaryVar.size + " " : ""}${item.name}`,
       price: primaryVar ? `$${primaryVar.price.toFixed(2)}` : "$4.50",
       color: getItemColor(item.name, item.categoryName),
+      categoryName: item.categoryName,
     });
   };
 
@@ -3290,7 +3496,7 @@ export default function BarMaidDashboard() {
                         <button
                           key={c.id}
                           onClick={() =>
-                            updateActiveTile({ color: c.id as TileColor })
+                            handleStationColorChange(c.id as TileColor)
                           }
                           className={`flex items-center space-x-2 px-3 py-2 rounded-lg border text-xs font-medium transition cursor-pointer ${
                             activeTile.color === c.id
