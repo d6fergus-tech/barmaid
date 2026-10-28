@@ -14,6 +14,8 @@ import {
 } from "@/app/onboard/intake/page";
 import {
   RULES_CONFIG_STORAGE_KEY,
+  deriveModifierPricingFromStage,
+  resolveModifierOptionUpcharge,
   type BusinessRulesConfig,
   type PersistedAuditMetrics,
   type PersistedLayoutTemplateCode,
@@ -956,8 +958,10 @@ export default function BarMaidDashboard() {
             source: "upload" as const,
           }));
 
-        const defaultModPrice =
-          parsedRules?.modifierPricing?.syrupSauceAddOnDollars ?? 0.75;
+        const resolvedModPricing = deriveModifierPricingFromStage(
+          parsedStage.modifiers || [],
+          resolvedSlug
+        );
 
         const hydratedModifiers: StagedModifier[] = (
           parsedStage.modifiers || []
@@ -965,7 +969,12 @@ export default function BarMaidDashboard() {
           .filter((mod) => mod.included !== false)
           .map((mod) => ({
             name: mod.name,
-            price: defaultModPrice,
+            price: resolveModifierOptionUpcharge(
+              mod.name,
+              mod.targetGroup || "",
+              parsedStage.modifiers || [],
+              resolvedModPricing
+            ),
           }));
 
         const combinedStagedItems = [
@@ -2075,14 +2084,21 @@ export default function BarMaidDashboard() {
           source: "upload" as const,
         }));
 
-      const defaultModPrice =
-        found.rulesConfig?.modifierPricing?.syrupSauceAddOnDollars ?? 0.75;
+      const resolvedModPricing = deriveModifierPricingFromStage(
+        restored.modifiers || [],
+        nextSlug
+      );
 
       const hydratedModifiers: StagedModifier[] = (restored.modifiers || [])
         .filter((mod) => mod.included !== false)
         .map((mod) => ({
           name: mod.name,
-          price: defaultModPrice,
+          price: resolveModifierOptionUpcharge(
+            mod.name,
+            mod.targetGroup || "",
+            restored.modifiers || [],
+            resolvedModPricing
+          ),
         }));
 
       const combinedStagedItems = [...hydratedDrinksAndFood, ...hydratedRetail];

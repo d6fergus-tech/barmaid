@@ -1304,6 +1304,7 @@ export default function MultiSourceIntakeStagingPage() {
       itemName = found.name;
       sourceFileName = found.sourceFileName;
       basePriceDollars = found.variations[0]?.price ?? 4.5;
+      unitCostCents = Math.round(basePriceDollars * 100);
       suggestedPriceCents = Math.round(basePriceDollars * 100);
       currentCategoryName = found.categoryName;
       currentVariations = found.variations;
@@ -1907,7 +1908,14 @@ export default function MultiSourceIntakeStagingPage() {
                 (v): v is { size: string; price: number } =>
                   Boolean(v?.size) && typeof v?.price === "number" && v.price > 0
               )
-              .map((v) => ({ size: v.size.trim(), price: v.price }));
+              .map((v) => {
+                const trimmedSize = v.size.trim();
+                const ozMatch = trimmedSize.match(/(\d+)\s*(?:fl\.?\s*)?oz/i);
+                return {
+                  size: ozMatch ? `${ozMatch[1]}oz` : trimmedSize,
+                  price: v.price,
+                };
+              });
 
             extractedDrinks.push({
               id: `drink_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,

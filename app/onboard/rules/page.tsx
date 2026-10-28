@@ -165,6 +165,7 @@ interface GroupedModifiers {
   groupLabel: string;
   upchargePrice: number;
   options: string[];
+  optionPrices: Record<string, number>;
 }
 
 const DEFAULT_SIZE_MATRIX: CupSizeRule[] = [
@@ -181,6 +182,247 @@ const DEFAULT_MODIFIER_PRICING: ModifierPricingRules = {
   extraShotDollars: 0.75,
   syrupSauceAddOnDollars: 0.5,
 };
+
+export function normalizeCupSizeKey(rawSize: string): string {
+  const trimmed = (rawSize || "").trim();
+  const ozMatch = trimmed.match(/(\d+)\s*(?:fl\.?\s*)?oz/i);
+  if (ozMatch) {
+    return `${ozMatch[1]}oz`.toLowerCase();
+  }
+  const numOnly = trimmed.match(/^(\d+)$/);
+  if (numOnly) {
+    return `${numOnly[1]}oz`.toLowerCase();
+  }
+  if (/^(xs|short|kids?)$/i.test(trimmed)) return "8oz";
+  if (/^(s|sm|small|tall)$/i.test(trimmed)) return "12oz";
+  if (/^(m|med|medium|grande)$/i.test(trimmed)) return "16oz";
+  if (/^(l|lg|large|venti)$/i.test(trimmed)) return "24oz";
+  if (/^(xl|extra\s*large|trenta)$/i.test(trimmed)) return "32oz";
+  return trimmed.toLowerCase().replace(/\s+/g, "");
+}
+
+export function extractItemVariations(
+  item: {
+    variations?: Array<{ size: string; price: number }>;
+    prices?: Record<string, number> | Array<{ size: string; price: number }>;
+  }
+): Array<{ size: string; price: number }> {
+  const result: Array<{ size: string; price: number }> = [];
+  const seen = new Set<string>();
+
+  if (Array.isArray(item.variations)) {
+    item.variations.forEach((v) => {
+      if (!v || typeof v.price !== "number" || v.price <= 0) return;
+      const normSize = normalizeCupSizeKey(v.size) || v.size.trim();
+      if (!seen.has(normSize)) {
+        seen.add(normSize);
+        result.push({ size: normSize, price: Number(v.price) });
+      }
+    });
+  }
+
+  if (item.prices) {
+    if (Array.isArray(item.prices)) {
+      item.prices.forEach((p) => {
+        if (!p || typeof p.price !== "number" || p.price <= 0) return;
+        const normSize = normalizeCupSizeKey(p.size) || p.size.trim();
+        if (!seen.has(normSize)) {
+          seen.add(normSize);
+          result.push({ size: normSize, price: Number(p.price) });
+        }
+      });
+    } else if (typeof item.prices === "object") {
+      Object.entries(item.prices).forEach(([sz, pr]) => {
+        if (typeof pr !== "number" || pr <= 0) return;
+        const normSize = normalizeCupSizeKey(sz) || sz.trim();
+        if (!seen.has(normSize)) {
+          seen.add(normSize);
+          result.push({ size: normSize, price: Number(pr) });
+        }
+      });
+    }
+  }
+
+  return result;
+}
+
+export function resolveItemVariationPrice(
+  item: PreviewCatalogItem,
+  selectedSize: CupSizeLabel,
+  allStagedDrinks: StagedMenuItem[]
+): number {
+  const targetKey = normalizeCupSizeKey(selectedSize);
+
+  // 1. Direct lookup on active item's variations array
+  const directMatch = item.variations.find(
+    (v) => normalizeCupSizeKey(v.size) === targetKey
+  );
+  if (
+    directMatch &&
+    typeof directMatch.price === "number" &&
+    directMatch.price > 0
+  ) {
+    return directMatch.price;
+  }
+
+  // 2. Lookup on matching stagedItems record (including any item.prices field)
+  const cleanTargetName = item.name
+    .toLowerCase()
+    .replace(/^(8\s*oz|12\s*oz|16\s*oz|20\s*oz|24\s*oz|32\s*oz)\s+/i, "")
+    .trim();
+  const stagedDrink = allStagedDrinks.find((d) => {
+    const cleanDrinkName = d.name
+      .toLowerCase()
+      .replace(/^(8\s*oz|12\s*oz|16\s*oz|20\s*oz|24\s*oz|32\s*oz)\s+/i, "")
+      .trim();
+    return d.id === item.id || cleanDrinkName === cleanTargetName;
+  });
+
+  if (stagedDrink) {
+    const stagedVars = extractItemVariations(
+      stagedDrink as StagedMenuItem & {
+        prices?: Record<string, number> | Array<{ size: string; price: number }>;
+      }
+    );
+    const stagedMatch = stagedVars.find(
+      (v) => normalizeCupSizeKey(v.size) === targetKey
+    );
+    if (
+      stagedMatch &&
+      typeof stagedMatch.price === "number" &&
+      stagedMatch.price > 0
+    ) {
+      return stagedMatch.price;
+    }
+  }
+
+  // 3. Check if a sibling drink in the same staged catalog with the same starting price defines an exact variation for this size
+  const siblingWithSameBase = allStagedDrinks.find((d) => {
+    const vars = extractItemVariations(d);
+    const firstVar = vars[0];
+    return (
+      firstVar &&
+      Math.abs(firstVar.price - item.basePrice) < 0.01 &&
+      vars.some((v) => normalizeCupSizeKey(v.size) === targetKey)
+    );
+  });
+  if (siblingWithSameBase) {
+    const siblingVar = extractItemVariations(siblingWithSameBase).find(
+      (v) => normalizeCupSizeKey(v.size) === targetKey
+    );
+    if (siblingVar && siblingVar.price > 0) {
+      return siblingVar.price;
+    }
+  }
+
+  // 4. Fallback to the item's base price without artificial hardcoded sizeIndex offsets
+  return item.basePrice;
+}
+
+export function getStagedModifierUpchargeDollars(
+  mod: StagedModifierOption & { price?: number; upchargeDollars?: number }
+): number | null {
+  if (typeof mod.upchargeDollars === "number" && mod.upchargeDollars > 0) {
+    return Number(mod.upchargeDollars.toFixed(2));
+  }
+  if (typeof mod.price === "number" && mod.price > 0) {
+    return Number(mod.price.toFixed(2));
+  }
+  if (typeof mod.unitCostCents === "number" && mod.unitCostCents > 0) {
+    if (mod.vendorName === "Menu Board" || mod.unitCostCents <= 450) {
+      return Number((mod.unitCostCents / 100).toFixed(2));
+    }
+  }
+  return null;
+}
+
+export function deriveModifierPricingFromStage(
+  modifiers: StagedModifierOption[] = [],
+  merchantSlug = ""
+): ModifierPricingRules {
+  const activeMods = modifiers.filter((m) => m.included !== false);
+  const isCastNBlast = /cast[-_\s]*n[-_\s]*blast/i.test(merchantSlug);
+  const hasCastNBlastModSignature = activeMods.some((m) =>
+    /^(alternative\s*milk|extra\s*sweet)$/i.test(m.name.trim())
+  );
+
+  let altMilkUpchargeDollars =
+    isCastNBlast || hasCastNBlastModSignature
+      ? 1.0
+      : DEFAULT_MODIFIER_PRICING.altMilkUpchargeDollars;
+  let extraShotDollars =
+    isCastNBlast || hasCastNBlastModSignature
+      ? 0.5
+      : DEFAULT_MODIFIER_PRICING.extraShotDollars;
+  let syrupSauceAddOnDollars =
+    isCastNBlast || hasCastNBlastModSignature
+      ? 0.75
+      : DEFAULT_MODIFIER_PRICING.syrupSauceAddOnDollars;
+
+  for (const mod of activeMods) {
+    const price = getStagedModifierUpchargeDollars(mod);
+    if (price === null) continue;
+    const clean = mod.name.trim();
+    const group = (mod.targetGroup || "").toLowerCase();
+
+    if (
+      /\b(alternative\s*milk|alt\s*milk|milk|dairy|oat|almond|coconut|soy|breve)\b/i.test(
+        clean
+      ) ||
+      group.includes("milk") ||
+      group.includes("dairy")
+    ) {
+      altMilkUpchargeDollars = price;
+    } else if (/\b(extra\s*shot|shot|shots|espresso\s*shot)\b/i.test(clean)) {
+      extraShotDollars = price;
+    } else if (
+      /\b(extra\s*sweet|sweet|syrup|sauce|white\s*chocolate|white\s*choc|mocha|caramel|vanilla|chai|flavor)\b/i.test(
+        clean
+      ) ||
+      group.includes("syrup") ||
+      group.includes("sauce")
+    ) {
+      syrupSauceAddOnDollars = price;
+    }
+  }
+
+  return {
+    altMilkUpchargeDollars,
+    extraShotDollars,
+    syrupSauceAddOnDollars,
+  };
+}
+
+export function resolveModifierOptionUpcharge(
+  optionName: string,
+  groupLabel: string,
+  stagedModifiers: StagedModifierOption[],
+  rulesPricing: ModifierPricingRules
+): number {
+  const cleanOpt = optionName.trim().toLowerCase();
+  const matchedMod = stagedModifiers.find(
+    (m) => m.name.trim().toLowerCase() === cleanOpt
+  );
+  if (matchedMod) {
+    const explicitPrice = getStagedModifierUpchargeDollars(matchedMod);
+    if (explicitPrice !== null) {
+      return explicitPrice;
+    }
+  }
+
+  if (/\b(extra\s*shot|shot|shots|espresso\s*shot)\b/i.test(cleanOpt)) {
+    return rulesPricing.extraShotDollars;
+  }
+  if (
+    groupLabel === "Dairy Options" ||
+    /\b(alternative\s*milk|alt\s*milk|milk|dairy|oat|almond|coconut|soy|breve|cream)\b/i.test(
+      cleanOpt
+    )
+  ) {
+    return rulesPricing.altMilkUpchargeDollars;
+  }
+  return rulesPricing.syrupSauceAddOnDollars;
+}
 
 export default function OnboardingRulesStepPage() {
   const router = useRouter();
@@ -218,8 +460,18 @@ export default function OnboardingRulesStepPage() {
       const rawStage =
         localStorage.getItem(INTAKE_STAGE_STORAGE_KEY) ||
         sessionStorage.getItem(INTAKE_STAGE_STORAGE_KEY);
+      let parsedStage: IntakeStageData | null = null;
+      let stageSlug = "";
+
       if (rawStage) {
-        const parsedStage = JSON.parse(rawStage) as IntakeStageData;
+        parsedStage = JSON.parse(rawStage) as IntakeStageData;
+        stageSlug =
+          parsedStage.storeProfile?.merchantSlug ||
+          toSlug(
+            parsedStage.storeProfile?.dbaName ||
+              parsedStage.storeProfile?.legalName ||
+              ""
+          );
         let wasNormalized = false;
 
         if (Array.isArray(parsedStage.stagedItems)) {
@@ -228,9 +480,21 @@ export default function OnboardingRulesStepPage() {
               item.categoryName,
               item.classification
             );
-            if (normCat !== item.categoryName) {
+            const normVars = extractItemVariations(item);
+            const varsChanged =
+              normVars.length > 0 &&
+              normVars.some(
+                (nv, idx) =>
+                  nv.size !== item.variations[idx]?.size ||
+                  nv.price !== item.variations[idx]?.price
+              );
+            if (normCat !== item.categoryName || varsChanged) {
               wasNormalized = true;
-              return { ...item, categoryName: normCat };
+              return {
+                ...item,
+                categoryName: normCat,
+                variations: normVars.length > 0 ? normVars : item.variations,
+              };
             }
             return item;
           });
@@ -256,6 +520,11 @@ export default function OnboardingRulesStepPage() {
         }
       }
 
+      const stageDerivedModPricing = deriveModifierPricingFromStage(
+        parsedStage?.modifiers || [],
+        stageSlug
+      );
+
       const rawRules =
         localStorage.getItem(RULES_CONFIG_STORAGE_KEY) ||
         sessionStorage.getItem(RULES_CONFIG_STORAGE_KEY);
@@ -264,28 +533,52 @@ export default function OnboardingRulesStepPage() {
         if (Array.isArray(parsedRules.sizeMatrix) && parsedRules.sizeMatrix.length > 0) {
           setSizeMatrix(parsedRules.sizeMatrix);
         }
-        if (parsedRules.modifierPricing) {
+
+        const isSameMerchant =
+          !parsedRules.merchant_slug ||
+          !stageSlug ||
+          parsedRules.merchant_slug === stageSlug;
+
+        const isOldHardcodedDefault =
+          parsedRules.modifierPricing &&
+          parsedRules.modifierPricing.altMilkUpchargeDollars ===
+            DEFAULT_MODIFIER_PRICING.altMilkUpchargeDollars &&
+          parsedRules.modifierPricing.extraShotDollars ===
+            DEFAULT_MODIFIER_PRICING.extraShotDollars &&
+          parsedRules.modifierPricing.syrupSauceAddOnDollars ===
+            DEFAULT_MODIFIER_PRICING.syrupSauceAddOnDollars;
+
+        if (
+          parsedRules.modifierPricing &&
+          isSameMerchant &&
+          !isOldHardcodedDefault
+        ) {
           setModifierPricing({
             altMilkUpchargeDollars:
               typeof parsedRules.modifierPricing.altMilkUpchargeDollars === "number"
                 ? parsedRules.modifierPricing.altMilkUpchargeDollars
-                : DEFAULT_MODIFIER_PRICING.altMilkUpchargeDollars,
+                : stageDerivedModPricing.altMilkUpchargeDollars,
             extraShotDollars:
               typeof parsedRules.modifierPricing.extraShotDollars === "number"
                 ? parsedRules.modifierPricing.extraShotDollars
-                : DEFAULT_MODIFIER_PRICING.extraShotDollars,
+                : stageDerivedModPricing.extraShotDollars,
             syrupSauceAddOnDollars:
               typeof parsedRules.modifierPricing.syrupSauceAddOnDollars === "number"
                 ? parsedRules.modifierPricing.syrupSauceAddOnDollars
-                : DEFAULT_MODIFIER_PRICING.syrupSauceAddOnDollars,
+                : stageDerivedModPricing.syrupSauceAddOnDollars,
           });
+        } else {
+          setModifierPricing(stageDerivedModPricing);
         }
+
         if (
           parsedRules.preferredPosPreview === "square" ||
           parsedRules.preferredPosPreview === "clover"
         ) {
           setPosMode(parsedRules.preferredPosPreview);
         }
+      } else {
+        setModifierPricing(stageDerivedModPricing);
       }
     } catch {
       // Ignore storage parse errors
@@ -348,14 +641,23 @@ export default function OnboardingRulesStepPage() {
       );
       if (normalizedCategory === "Supplies") return;
 
-      const baseVar = d.variations[0];
+      const resolvedVars = extractItemVariations(
+        d as StagedMenuItem & {
+          prices?: Record<string, number> | Array<{ size: string; price: number }>;
+        }
+      );
+      const baseVar = resolvedVars[0] || d.variations[0];
       items.push({
         id: d.id,
         name: d.name,
         category: normalizedCategory,
         basePrice: baseVar?.price ?? 4.75,
         variations:
-          d.variations.length > 0 ? d.variations : [{ size: "16oz", price: 4.75 }],
+          resolvedVars.length > 0
+            ? resolvedVars
+            : d.variations.length > 0
+            ? d.variations
+            : [{ size: "16oz", price: 4.75 }],
         isRetail: normalizedCategory === "Retail",
       });
     });
@@ -436,14 +738,26 @@ export default function OnboardingRulesStepPage() {
       return [];
     }
 
+    const optionsList = Array.from(foodSet);
+    const optionPrices: Record<string, number> = {};
+    optionsList.forEach((opt) => {
+      optionPrices[opt] = resolveModifierOptionUpcharge(
+        opt,
+        "Food Preparation & Spreads",
+        activeStagedModifiers,
+        modifierPricing
+      );
+    });
+
     return [
       {
         groupLabel: "Food Preparation & Spreads",
         upchargePrice: modifierPricing.syrupSauceAddOnDollars,
-        options: Array.from(foodSet),
+        options: optionsList,
+        optionPrices,
       },
     ];
-  }, [activeStagedModifiers, modifierPricing.syrupSauceAddOnDollars]);
+  }, [activeStagedModifiers, modifierPricing]);
 
   // Build deduplicated Modifier Groups for the Modifier Pop-Out Sheet directly from staged modifiers
   const deduplicatedModifierGroups: GroupedModifiers[] = useMemo(() => {
@@ -458,7 +772,7 @@ export default function OnboardingRulesStepPage() {
         if (!cleanName) return;
         const g = mod.targetGroup.toLowerCase();
 
-        if (g.includes("milk") || g.includes("dairy") || /oat|almond|coconut|soy|breve|cream/i.test(cleanName)) {
+        if (g.includes("milk") || g.includes("dairy") || /oat|almond|coconut|soy|breve|cream|milk/i.test(cleanName)) {
           dairySet.add(cleanName);
         } else if (g.includes("sauce") || /sauce|mocha|white choc|caramel drizzle/i.test(cleanName)) {
           sauceSet.add(cleanName);
@@ -503,27 +817,50 @@ export default function OnboardingRulesStepPage() {
       ].forEach((m) => sauceSet.add(m));
     }
 
+    const buildGroup = (
+      groupLabel: string,
+      upchargePrice: number,
+      set: Set<string>
+    ): GroupedModifiers => {
+      const options = Array.from(set);
+      const optionPrices: Record<string, number> = {};
+      options.forEach((opt) => {
+        optionPrices[opt] = resolveModifierOptionUpcharge(
+          opt,
+          groupLabel,
+          activeStagedModifiers,
+          modifierPricing
+        );
+      });
+      return {
+        groupLabel,
+        upchargePrice,
+        options,
+        optionPrices,
+      };
+    };
+
     return [
-      {
-        groupLabel: "Dairy Options",
-        upchargePrice: modifierPricing.altMilkUpchargeDollars,
-        options: Array.from(dairySet),
-      },
-      {
-        groupLabel: "Syrups",
-        upchargePrice: modifierPricing.syrupSauceAddOnDollars,
-        options: Array.from(syrupSet),
-      },
-      {
-        groupLabel: "Energy & Boosters",
-        upchargePrice: modifierPricing.extraShotDollars,
-        options: Array.from(energySet),
-      },
-      {
-        groupLabel: "Sauces",
-        upchargePrice: modifierPricing.syrupSauceAddOnDollars,
-        options: Array.from(sauceSet),
-      },
+      buildGroup(
+        "Dairy Options",
+        modifierPricing.altMilkUpchargeDollars,
+        dairySet
+      ),
+      buildGroup(
+        "Syrups",
+        modifierPricing.syrupSauceAddOnDollars,
+        syrupSet
+      ),
+      buildGroup(
+        "Energy & Boosters",
+        modifierPricing.extraShotDollars,
+        energySet
+      ),
+      buildGroup(
+        "Sauces",
+        modifierPricing.syrupSauceAddOnDollars,
+        sauceSet
+      ),
     ];
   }, [activeStagedModifiers, modifierPricing]);
 
@@ -550,8 +887,23 @@ export default function OnboardingRulesStepPage() {
   // Open Drink / Item Detail Modal
   const handleOpenDrinkModal = (item: PreviewCatalogItem) => {
     setActiveDrinkModal(item);
+    const validCupSizes: CupSizeLabel[] = [
+      "8oz",
+      "12oz",
+      "16oz",
+      "20oz",
+      "24oz",
+      "32oz",
+    ];
+    const itemVarSizes = item.variations
+      .map((v) => normalizeCupSizeKey(v.size))
+      .filter((s): s is CupSizeLabel =>
+        validCupSizes.includes(s as CupSizeLabel)
+      );
     const enabledSizes = sizeMatrix.filter((s) => s.enabled);
-    const defaultSize =
+    const defaultSize: CupSizeLabel =
+      itemVarSizes.find((s) => s === "16oz") ||
+      itemVarSizes[0] ||
       enabledSizes.find((s) => s.size === "16oz")?.size ||
       enabledSizes[0]?.size ||
       "16oz";
@@ -794,14 +1146,15 @@ export default function OnboardingRulesStepPage() {
           g.options.includes(modName)
         );
         if (group) {
-          foodModsUpcharge += group.upchargePrice;
+          const optPrice = group.optionPrices?.[modName] ?? group.upchargePrice;
+          foodModsUpcharge += optPrice;
         }
       });
       return {
         baseSizePrice: baseFoodPrice,
         sizeRule,
-        modifiersUpcharge: foodModsUpcharge,
-        totalPrice: baseFoodPrice + foodModsUpcharge,
+        modifiersUpcharge: Number(foodModsUpcharge.toFixed(2)),
+        totalPrice: Number((baseFoodPrice + foodModsUpcharge).toFixed(2)),
       };
     }
 
@@ -814,15 +1167,11 @@ export default function OnboardingRulesStepPage() {
       };
     }
 
-    const matchedVar = activeDrinkModal.variations.find(
-      (v) => v.size.toLowerCase() === selectedModalSize.toLowerCase()
+    const baseSizePrice = resolveItemVariationPrice(
+      activeDrinkModal,
+      selectedModalSize,
+      activeStagedDrinks
     );
-    const sizeIndex = DEFAULT_SIZE_MATRIX.findIndex(
-      (s) => s.size === selectedModalSize
-    );
-    const fallbackPrice =
-      activeDrinkModal.basePrice + Math.max(0, sizeIndex - 2) * 0.5;
-    const baseSizePrice = matchedVar ? matchedVar.price : fallbackPrice;
 
     let modifiersUpcharge = extraShotsCount * modifierPricing.extraShotDollars;
     selectedModalMods.forEach((modName) => {
@@ -830,15 +1179,17 @@ export default function OnboardingRulesStepPage() {
         g.options.includes(modName)
       );
       if (group) {
-        modifiersUpcharge += group.upchargePrice;
+        const optPrice = group.optionPrices?.[modName] ?? group.upchargePrice;
+        modifiersUpcharge += optPrice;
       }
     });
 
+    const roundedMods = Number(modifiersUpcharge.toFixed(2));
     return {
       baseSizePrice,
       sizeRule,
-      modifiersUpcharge,
-      totalPrice: baseSizePrice + modifiersUpcharge,
+      modifiersUpcharge: roundedMods,
+      totalPrice: Number((baseSizePrice + roundedMods).toFixed(2)),
     };
   }, [
     activeDrinkModal,
@@ -850,6 +1201,7 @@ export default function OnboardingRulesStepPage() {
     selectedModalMods,
     deduplicatedModifierGroups,
     foodModifierGroups,
+    activeStagedDrinks,
   ]);
 
   // Save Rules & Continue to Step 3: POS Connect
@@ -903,6 +1255,16 @@ export default function OnboardingRulesStepPage() {
     const restoredStage = restoreSessionToActiveStage(session);
     setStageData(restoredStage);
 
+    const sessionSlug =
+      restoredStage.storeProfile?.merchantSlug ||
+      session.storeProfile?.merchantSlug ||
+      session.id ||
+      "";
+    const derivedSessionModPricing = deriveModifierPricingFromStage(
+      restoredStage.modifiers || [],
+      sessionSlug
+    );
+
     if (session.rulesConfig) {
       if (
         Array.isArray(session.rulesConfig.sizeMatrix) &&
@@ -910,8 +1272,19 @@ export default function OnboardingRulesStepPage() {
       ) {
         setSizeMatrix(session.rulesConfig.sizeMatrix);
       }
-      if (session.rulesConfig.modifierPricing) {
+      const isOldDefault =
+        session.rulesConfig.modifierPricing &&
+        session.rulesConfig.modifierPricing.altMilkUpchargeDollars ===
+          DEFAULT_MODIFIER_PRICING.altMilkUpchargeDollars &&
+        session.rulesConfig.modifierPricing.extraShotDollars ===
+          DEFAULT_MODIFIER_PRICING.extraShotDollars &&
+        session.rulesConfig.modifierPricing.syrupSauceAddOnDollars ===
+          DEFAULT_MODIFIER_PRICING.syrupSauceAddOnDollars;
+
+      if (session.rulesConfig.modifierPricing && !isOldDefault) {
         setModifierPricing(session.rulesConfig.modifierPricing);
+      } else {
+        setModifierPricing(derivedSessionModPricing);
       }
       if (
         session.rulesConfig.preferredPosPreview === "square" ||
@@ -921,7 +1294,7 @@ export default function OnboardingRulesStepPage() {
       }
     } else {
       setSizeMatrix(DEFAULT_SIZE_MATRIX);
-      setModifierPricing(DEFAULT_MODIFIER_PRICING);
+      setModifierPricing(derivedSessionModPricing);
     }
 
     setIsSessionDrawerOpen(false);
@@ -2020,6 +2393,9 @@ export default function OnboardingRulesStepPage() {
                             {group.options.map((optName) => {
                               const isPicked =
                                 selectedModalMods.includes(optName);
+                              const optPrice =
+                                group.optionPrices?.[optName] ??
+                                group.upchargePrice;
                               return (
                                 <button
                                   key={optName}
@@ -2036,8 +2412,8 @@ export default function OnboardingRulesStepPage() {
                                   </span>
                                   <span className="text-[10px] font-mono text-amber-400 shrink-0">
                                     {isPicked
-                                      ? "✓"
-                                      : `+$${group.upchargePrice.toFixed(2)}`}
+                                      ? `✓ +$${optPrice.toFixed(2)}`
+                                      : `+$${optPrice.toFixed(2)}`}
                                   </span>
                                 </button>
                               );
@@ -2078,9 +2454,22 @@ export default function OnboardingRulesStepPage() {
 
                     <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                       {sizeMatrix
-                        .filter((s) => s.enabled)
+                        .filter(
+                          (s) =>
+                            s.enabled ||
+                            activeDrinkModal.variations.some(
+                              (v) =>
+                                normalizeCupSizeKey(v.size) ===
+                                normalizeCupSizeKey(s.size)
+                            )
+                        )
                         .map((s) => {
                           const isSelected = selectedModalSize === s.size;
+                          const sizeVarPrice = resolveItemVariationPrice(
+                            activeDrinkModal,
+                            s.size,
+                            activeStagedDrinks
+                          );
                           return (
                             <button
                               key={s.size}
@@ -2093,6 +2482,9 @@ export default function OnboardingRulesStepPage() {
                               }`}
                             >
                               <div className="text-xs font-mono font-bold">{s.size}</div>
+                              <div className="text-[11px] font-mono font-semibold mt-0.5">
+                                ${sizeVarPrice.toFixed(2)}
+                              </div>
                               <div className="text-[10px] font-mono opacity-80 mt-0.5">
                                 {s.defaultShots}sh / {s.defaultSyrupPumps}p
                               </div>
@@ -2152,6 +2544,9 @@ export default function OnboardingRulesStepPage() {
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                           {group.options.map((optName) => {
                             const isPicked = selectedModalMods.includes(optName);
+                            const optPrice =
+                              group.optionPrices?.[optName] ??
+                              group.upchargePrice;
                             return (
                               <button
                                 key={optName}
@@ -2166,8 +2561,8 @@ export default function OnboardingRulesStepPage() {
                                 <span className="truncate pr-2">{optName}</span>
                                 <span className="text-[10px] font-mono text-amber-400 shrink-0">
                                   {isPicked
-                                    ? "✓"
-                                    : `+$${group.upchargePrice.toFixed(2)}`}
+                                    ? `✓ +$${optPrice.toFixed(2)}`
+                                    : `+$${optPrice.toFixed(2)}`}
                                 </span>
                               </button>
                             );
