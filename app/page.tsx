@@ -146,6 +146,124 @@ const getTemplateAuditMetrics = (
   };
 };
 
+export const SIPPASS_CANONICAL_CATEGORIES = [
+  "Espresso Classics",
+  "Energy & Lotus",
+  "Cold Bar & Blended",
+  "Teas & Refreshers",
+  "Bakery & Food",
+  "Retail & Packaged",
+] as const;
+
+export type SipPassCanonicalCategory =
+  (typeof SIPPASS_CANONICAL_CATEGORIES)[number];
+
+export const getCanonicalCategoryColor = (
+  category: SipPassCanonicalCategory
+): TileColor => {
+  switch (category) {
+    case "Espresso Classics":
+      return "amber";
+    case "Energy & Lotus":
+    case "Cold Bar & Blended":
+    case "Teas & Refreshers":
+      return "cyan";
+    case "Bakery & Food":
+      return "emerald";
+    case "Retail & Packaged":
+      return "slate";
+  }
+};
+
+export const normalizeToCanonicalSipPassCategory = (
+  itemName: string,
+  rawCategoryName?: string,
+  classification?: string
+): { folderName: SipPassCanonicalCategory; folderColor: TileColor } => {
+  const trimmedCat = (rawCategoryName || "").trim();
+  const lowerCat = trimmedCat.toLowerCase();
+  const lowerName = (itemName || "")
+    .toLowerCase()
+    .replace(/^\d+oz\s+/i, "")
+    .replace(/\s+\(base\)$/i, "")
+    .trim();
+  const combined = `${lowerName} ${lowerCat}`;
+
+  // 0. Respect explicit canonical category overrides (e.g., from Station Color Coding in Tile Inspector)
+  if (lowerCat === "bakery & food") {
+    return { folderName: "Bakery & Food", folderColor: "emerald" };
+  }
+  if (lowerCat === "retail & packaged") {
+    return { folderName: "Retail & Packaged", folderColor: "slate" };
+  }
+  if (lowerCat === "energy & lotus") {
+    return { folderName: "Energy & Lotus", folderColor: "cyan" };
+  }
+  if (lowerCat === "cold bar & blended") {
+    return { folderName: "Cold Bar & Blended", folderColor: "cyan" };
+  }
+  if (lowerCat === "teas & refreshers") {
+    return { folderName: "Teas & Refreshers", folderColor: "cyan" };
+  }
+  if (lowerCat === "espresso classics" || lowerCat === "hot espresso bar") {
+    return { folderName: "Espresso Classics", folderColor: "amber" };
+  }
+
+  // 1. Bakery & Food: classification "food" or matching bakery/food keywords
+  // Note: check "\bbar\b" against lowerName only so "Espresso Bar" / "Cold Bar" in rawCategoryName does not false-match
+  if (
+    classification === "food" ||
+    /\b(cookie|cookies|muffin|muffins|scone|scones|bagel|bagels|sandwich|sandwiches|bread|pastry|pastries|treat|treats|crispie|cake|bar|bars|roll|rolls|croissant|quiche|burrito|ciabatta|toast|pretzel|biscotti|danish|donut|doughnut|wrap|panini|waffle|oatmeal|egg bite)\b/i.test(
+      lowerName
+    ) ||
+    /\b(bakery|food|pastry|pastries|breakfast)\b/i.test(lowerCat)
+  ) {
+    return { folderName: "Bakery & Food", folderColor: "emerald" };
+  }
+
+  // 2. Retail & Packaged: classification "retail_item" or matching retail/merchandise keywords
+  if (
+    classification === "retail_item" ||
+    /\b(bean|beans|1\s*lb|5\s*lb|12\s*oz\s*bag|merch|merchandise|tumbler|mug|cup|rehydrate|retail|sticker|stickers|whole\s*bean|gift\s*card|shirt|hoodie|packaged|bagged)\b/i.test(
+      combined
+    ) ||
+    (classification === "retail_item" && /\bspark\b/i.test(combined))
+  ) {
+    return { folderName: "Retail & Packaged", folderColor: "slate" };
+  }
+
+  // 3. Energy & Lotus: matching energy, lotus, red bull, fusion, blast, spark, italian soda
+  if (
+    /\b(lotus|red\s*bull|redbull|energy|rebel|fusion|blast|spark|italian\s*soda|torani\s*energy|infusion|spritzer|rockstar|monster|charger|fizz)\b/i.test(
+      combined
+    )
+  ) {
+    return { folderName: "Energy & Lotus", folderColor: "cyan" };
+  }
+
+  // 4. Cold Bar & Blended: matching frappe, smoothie, blended, freeze, boba, iced blended, shake
+  if (
+    /\b(frappe|frappuccino|smoothie|smoothies|blended|freeze|boba|bubble|iced\s*blended|shake|milkshake|granita|slush|big\s*train|frost|cooler)\b/i.test(
+      combined
+    )
+  ) {
+    return { folderName: "Cold Bar & Blended", folderColor: "cyan" };
+  }
+
+  // 5. Teas & Refreshers: matching chai, tea, matcha, lemonade, refresher, london fog, tisane, iced tea, green tea, herbal
+  if (
+    /\b(chai|tea|teas|matcha|lemonade|refresher|refreshers|london\s*fog|tisane|iced\s*tea|green\s*tea|black\s*tea|herbal|arnold\s*palmer|palmer|earl\s*grey|chamomile|hibiscus)\b/i.test(
+      combined
+    )
+  ) {
+    return { folderName: "Teas & Refreshers", folderColor: "cyan" };
+  }
+
+  // 6. Retail & Packaged fallback for standalone "spark" if not caught above and explicitly in retail context, otherwise Espresso Classics
+  // 6. Espresso Classics: any remaining drinks, coffee items, or items matching latte, mocha, americano, drip, breve, cappuccino, macchiato, espresso, cortado, cold brew, nitro, pour over, cafe au lait, hot chocolate
+  return { folderName: "Espresso Classics", folderColor: "amber" };
+};
+
 type GridTile = {
   id: number;
   label: string;
@@ -155,7 +273,7 @@ type GridTile = {
 };
 
 type CategoryFolderGroup = {
-  folderName: string;
+  folderName: SipPassCanonicalCategory;
   itemCount: number;
   color: TileColor;
   items: GridTile[];
@@ -171,44 +289,16 @@ const createEmptyPage = (pageIndex: number): GridTile[] => {
   }));
 };
 
-const getItemColor = (name: string, categoryName?: string): TileColor => {
-  const lowerCat = (categoryName || "").trim().toLowerCase();
-  if (lowerCat === "bakery & food" || lowerCat === "food & pastries") {
-    return "emerald";
-  }
-  if (lowerCat === "espresso classics" || lowerCat === "hot espresso bar") {
-    return "amber";
-  }
-  if (
-    lowerCat === "cold bar & blended" ||
-    lowerCat === "energy & lotus" ||
-    lowerCat === "teas & refreshers"
-  ) {
-    return "cyan";
-  }
-  if (lowerCat === "retail & packaged" || lowerCat === "retail packaged") {
-    return "slate";
-  }
-
-  const combined = `${name} ${categoryName || ""}`;
-  if (/retail|bean|merch|bagged/i.test(combined)) {
-    return "slate";
-  }
-  if (
-    /muffin|scone|cookie|burrito|bagel|pastry|food|sandwich|croissant|snack|treat|bakery|pretzel|biscotti|cake/i.test(
-      combined
-    )
-  ) {
-    return "emerald";
-  }
-  if (
-    /cold|iced|lotus|energy|redbull|rebel|tea|smoothie|soda|lemonade|boba|frappe|blended/i.test(
-      combined
-    )
-  ) {
-    return "cyan";
-  }
-  return "amber";
+const getItemColor = (
+  name: string,
+  categoryName?: string,
+  classification?: string
+): TileColor => {
+  return normalizeToCanonicalSipPassCategory(
+    name,
+    categoryName,
+    classification
+  ).folderColor;
 };
 
 const buildPagesFromCatalog = (
@@ -249,11 +339,17 @@ const buildPagesFromCatalog = (
         ? `$${primaryVar.price.toFixed(2)}`
         : "$4.50";
 
+    const canonical = normalizeToCanonicalSipPassCategory(
+      item.name,
+      item.categoryName,
+      item.classification
+    );
+
     return {
       label,
       price,
-      color: getItemColor(item.name, item.categoryName),
-      categoryName: item.categoryName,
+      color: canonical.folderColor,
+      categoryName: canonical.folderName,
     };
   });
 
@@ -841,15 +937,11 @@ export default function BarMaidDashboard() {
           )
           .map((item) => ({
             name: item.name,
-            categoryName:
-              item.classification === "food"
-                ? item.categoryName &&
-                  !["drinks", "beverages", "espresso bar"].includes(
-                    item.categoryName.trim().toLowerCase()
-                  )
-                  ? item.categoryName
-                  : "Bakery & Food"
-                : item.categoryName || "",
+            categoryName: normalizeToCanonicalSipPassCategory(
+              item.name,
+              item.categoryName,
+              item.classification
+            ).folderName,
             classification: item.classification,
             variations:
               item.variations && item.variations.length > 0
@@ -1176,7 +1268,7 @@ export default function BarMaidDashboard() {
     }
   };
 
-  // SipPass-aligned canonical category folders derived dynamically from stagedItems and active pages
+  // SipPass-aligned canonical category folders derived strictly into SIPPASS_CANONICAL_CATEGORIES
   const categoryFolders = useMemo<CategoryFolderGroup[]>(() => {
     const normalizeText = (val: string) =>
       val
@@ -1191,167 +1283,11 @@ export default function BarMaidDashboard() {
       stagedModifiers.map((m) => normalizeText(m.name))
     );
 
-    // Generic catch-all bucket names that should be normalized into canonical SipPass families
-    const GENERIC_CATCHALL_CATEGORIES = new Set<string>([
-      "",
-      "drinks",
-      "drink",
-      "beverages",
-      "beverage",
-      "drinks & beverages",
-      "drinks & food",
-      "all items",
-      "menu items",
-      "uncategorized",
-      "general",
-      "other",
-      "items",
-      "pos items",
-      "staged items",
-      "espresso bar",
-      "espresso bar & classics",
-      "espresso",
-      "coffee",
-      "hot drinks",
-      "cold drinks",
-      "iced drinks",
-      "cold bar",
-      "cold bar & energy",
-      "energy",
-      "energy drinks",
-      "blended",
-      "tea",
-      "teas",
-      "food",
-      "food & pastries",
-      "pastries",
-      "bakery",
-      "retail",
-      "retail packaged",
-      "retail & bulk",
-      "merchandise",
-    ]);
-
-    const classifyIntoSipPassFamily = (
-      itemName: string,
-      rawCategoryName?: string,
-      classification?: string
-    ): { folderName: string; folderColor: TileColor } => {
-      const trimmedRawCat = (rawCategoryName || "").trim();
-      const lowerCat = trimmedRawCat.toLowerCase();
-      const combined = `${itemName} ${trimmedRawCat}`.toLowerCase();
-
-      // 0. Top priority: Explicit Canonical SipPass Category assignment (e.g. from Station Color Coding override)
-      if (lowerCat === "bakery & food") {
-        return { folderName: "Bakery & Food", folderColor: "emerald" };
-      }
-      if (
-        lowerCat === "espresso classics" ||
-        lowerCat === "hot espresso bar"
-      ) {
-        return { folderName: "Espresso Classics", folderColor: "amber" };
-      }
-      if (lowerCat === "cold bar & blended") {
-        return { folderName: "Cold Bar & Blended", folderColor: "cyan" };
-      }
-      if (lowerCat === "energy & lotus") {
-        return { folderName: "Energy & Lotus", folderColor: "cyan" };
-      }
-      if (lowerCat === "teas & refreshers") {
-        return { folderName: "Teas & Refreshers", folderColor: "cyan" };
-      }
-      if (lowerCat === "retail & packaged") {
-        return { folderName: "Retail & Packaged", folderColor: "slate" };
-      }
-
-      // 1. Check if item has a specific extracted board categoryName (e.g. "Signature Mochas", "Kiddie Corner")
-      const isSpecificBoardCategory =
-        trimmedRawCat.length > 0 && !GENERIC_CATCHALL_CATEGORIES.has(lowerCat);
-
-      if (isSpecificBoardCategory) {
-        let boardColor: TileColor = "amber";
-        if (
-          classification === "retail_item" ||
-          /retail|bean|merch|bagged|packaged/i.test(combined)
-        ) {
-          boardColor = "slate";
-        } else if (
-          classification === "food" ||
-          /bakery|food|pastry|pastries|sandwich|bagel|muffin|cookie|scone|croissant|burrito|breakfast|snack/i.test(
-            combined
-          )
-        ) {
-          boardColor = "emerald";
-        } else if (
-          /energy|lotus|red\s*bull|redbull|rebel|soda|spritzer|cold|iced|frappe|smoothie|blended|boba|shake|freeze|slush|big train|tea|chai|matcha|lemonade|refresher|kiddie|kids/i.test(
-            combined
-          )
-        ) {
-          boardColor = "cyan";
-        }
-        return { folderName: trimmedRawCat, folderColor: boardColor };
-      }
-
-      // 2. Canonical SipPass Customer-Facing Menu Families
-      // Family 5: Bakery & Food ("emerald") checked before retail if classification === "food"
-      if (classification === "food") {
-        return { folderName: "Bakery & Food", folderColor: "emerald" };
-      }
-
-      // Family 6: Retail & Packaged ("slate")
-      if (
-        classification === "retail_item" ||
-        /whole bean|coffee bean|12oz bag|1lb bag|5lb bag|retail|merch|tumbler|mug|shirt|hoodie|sticker|gift card|packaged|bagged/i.test(
-          combined
-        )
-      ) {
-        return { folderName: "Retail & Packaged", folderColor: "slate" };
-      }
-
-      if (
-        /sandwich|bagel|muffin|pastry|pastries|cookie|scone|croissant|burrito|ciabatta|toast|pretzel|biscotti|cake|danish|donut|doughnut|wrap|panini|quiche|waffle|oatmeal|egg bite|food|bakery/i.test(
-          combined
-        )
-      ) {
-        return { folderName: "Bakery & Food", folderColor: "emerald" };
-      }
-
-      // Family 2: Energy & Lotus ("cyan")
-      if (
-        /lotus|red\s*bull|redbull|energy|rebel|infusion|italian soda|\bsoda\b|spritzer|rockstar|monster|bull|charger|fizz/i.test(
-          combined
-        )
-      ) {
-        return { folderName: "Energy & Lotus", folderColor: "cyan" };
-      }
-
-      // Family 4: Teas & Refreshers ("cyan")
-      if (
-        /\btea\b|chai|matcha|lemonade|refresher|london fog|arnold palmer|palmer|earl grey|chamomile|hibiscus|green tea|black tea|herbal/i.test(
-          combined
-        )
-      ) {
-        return { folderName: "Teas & Refreshers", folderColor: "cyan" };
-      }
-
-      // Family 3: Cold Bar & Blended ("cyan")
-      if (
-        /frappe|frappuccino|smoothie|blended|boba|bubble|milkshake|shake|freeze|granita|slush|big train|frost|cooler|iced specialty|cold foam/i.test(
-          combined
-        )
-      ) {
-        return { folderName: "Cold Bar & Blended", folderColor: "cyan" };
-      }
-
-      // Family 1: Espresso Classics ("amber")
-      return { folderName: "Espresso Classics", folderColor: "amber" };
-    };
-
     // Index staged catalog items by normalized name
     const stagedMetaByLabel = new Map<
       string,
       {
-        folderName: string;
+        folderName: SipPassCanonicalCategory;
         folderColor: TileColor;
         isModifierOrSupply: boolean;
       }
@@ -1361,7 +1297,7 @@ export default function BarMaidDashboard() {
       const isModOrSupply =
         item.classification === "modifier_option" ||
         item.classification === "operational_supply";
-      const resolved = classifyIntoSipPassFamily(
+      const resolved = normalizeToCanonicalSipPassCategory(
         item.name,
         item.categoryName,
         item.classification
@@ -1372,10 +1308,17 @@ export default function BarMaidDashboard() {
       });
     });
 
+    // Initialize buckets strictly for SIPPASS_CANONICAL_CATEGORIES in canonical order
     const folderMap = new Map<
-      string,
+      SipPassCanonicalCategory,
       { color: TileColor; items: GridTile[] }
     >();
+    SIPPASS_CANONICAL_CATEGORIES.forEach((cat) => {
+      folderMap.set(cat, {
+        color: getCanonicalCategoryColor(cat),
+        items: [],
+      });
+    });
 
     const assignedTiles = allPagesFlatTiles.filter(
       (t) =>
@@ -1414,44 +1357,26 @@ export default function BarMaidDashboard() {
       }
 
       // If tile has an explicit categoryName override (e.g. set via Station Color Coding in Tile Inspector), prioritize it
-      const { folderName, folderColor } = tile.categoryName
-        ? classifyIntoSipPassFamily(rawLabel, tile.categoryName)
-        : matchedMeta || classifyIntoSipPassFamily(rawLabel);
+      const { folderName } = tile.categoryName
+        ? normalizeToCanonicalSipPassCategory(rawLabel, tile.categoryName)
+        : matchedMeta || normalizeToCanonicalSipPassCategory(rawLabel);
 
-      const existing = folderMap.get(folderName);
-      if (existing) {
-        existing.items.push(tile);
-      } else {
-        folderMap.set(folderName, { color: folderColor, items: [tile] });
+      const targetBucket = folderMap.get(folderName);
+      if (targetBucket) {
+        targetBucket.items.push(tile);
       }
     });
 
-    const canonicalOrder = [
-      "Espresso Classics",
-      "Energy & Lotus",
-      "Cold Bar & Blended",
-      "Teas & Refreshers",
-      "Bakery & Food",
-      "Retail & Packaged",
-    ];
-
-      // Suppress any empty category folders that have 0 items
-    return Array.from(folderMap.entries())
-      .filter(([, data]) => data.items.length > 0)
-      .map(([folderName, data]) => ({
+    // Render strictly in SIPPASS_CANONICAL_CATEGORIES order and suppress any folders with 0 items
+    return SIPPASS_CANONICAL_CATEGORIES.map((folderName) => {
+      const data = folderMap.get(folderName)!;
+      return {
         folderName,
         itemCount: data.items.length,
         color: data.color,
         items: data.items,
-      }))
-      .sort((a, b) => {
-        const idxA = canonicalOrder.indexOf(a.folderName);
-        const idxB = canonicalOrder.indexOf(b.folderName);
-        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-        if (idxA !== -1) return -1;
-        if (idxB !== -1) return 1;
-        return a.folderName.localeCompare(b.folderName);
-      });
+      };
+    }).filter((group) => group.itemCount > 0);
   }, [allPagesFlatTiles, stagedItems, stagedModifiers]);
 
   // If the last item in the currently viewed category folder was reassigned to a different folder, return cleanly to All Categories
@@ -1989,15 +1914,11 @@ export default function BarMaidDashboard() {
         )
         .map((item) => ({
           name: item.name,
-          categoryName:
-            item.classification === "food"
-              ? item.categoryName &&
-                !["drinks", "beverages", "espresso bar"].includes(
-                  item.categoryName.trim().toLowerCase()
-                )
-                ? item.categoryName
-                : "Bakery & Food"
-              : item.categoryName || "",
+          categoryName: normalizeToCanonicalSipPassCategory(
+            item.name,
+            item.categoryName,
+            item.classification
+          ).folderName,
           classification: item.classification,
           variations:
             item.variations && item.variations.length > 0
