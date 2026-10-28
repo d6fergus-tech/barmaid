@@ -43,6 +43,12 @@ type Variation = {
 type StagedItem = {
   name: string;
   categoryName: string;
+  classification?:
+    | "drink"
+    | "food"
+    | "retail_item"
+    | "modifier_option"
+    | "operational_supply";
   variations: Variation[];
   squareId?: string;
   source: "square" | "upload" | "reconciled";
@@ -800,13 +806,24 @@ export default function BarMaidDashboard() {
         const hydratedDrinksAndFood: StagedItem[] = (
           parsedStage.stagedItems || []
         )
-          .filter((item) => item.included !== false)
+          .filter(
+            (item) =>
+              item.included !== false &&
+              (item.classification as string) !== "modifier_option" &&
+              (item.classification as string) !== "operational_supply"
+          )
           .map((item) => ({
             name: item.name,
             categoryName:
               item.classification === "food"
-                ? "Food & Pastries"
-                : item.categoryName || "Espresso Bar",
+                ? item.categoryName &&
+                  !["drinks", "beverages", "espresso bar"].includes(
+                    item.categoryName.trim().toLowerCase()
+                  )
+                  ? item.categoryName
+                  : "Bakery & Food"
+                : item.categoryName || "",
+            classification: item.classification,
             variations:
               item.variations && item.variations.length > 0
                 ? item.variations
@@ -818,7 +835,8 @@ export default function BarMaidDashboard() {
           .filter((item) => item.included !== false)
           .map((item) => ({
             name: item.name,
-            categoryName: "Retail Packaged",
+            categoryName: "Retail & Packaged",
+            classification: "retail_item" as const,
             variations: [
               {
                 size: item.sku || "Unit",
@@ -988,128 +1006,184 @@ export default function BarMaidDashboard() {
         .replace(/^\+\s+/, "")
         .trim();
 
-    // Index staged items by normalized name so we preserve custom/extracted board categories
-    const stagedCategoryByLabel = new Map<string, string>();
-    stagedItems.forEach((item) => {
-      const rawCat = (item.categoryName || "").trim();
-      const lowerCat = rawCat.toLowerCase();
-      let canonicalCat = rawCat || "Espresso Bar & Classics";
+    // Set of standalone modifier names to strictly exclude from customer-facing product folders
+    const modifierNameSet = new Set<string>(
+      stagedModifiers.map((m) => normalizeText(m.name))
+    );
 
-      if (lowerCat.includes("retail") || lowerCat.includes("merch")) {
-        canonicalCat = "Retail Packaged";
-      } else if (
-        lowerCat.includes("food") ||
-        lowerCat.includes("pastry") ||
-        lowerCat.includes("pastries") ||
-        lowerCat.includes("bakery") ||
-        lowerCat.includes("breakfast")
-      ) {
-        canonicalCat = "Food & Pastries";
-      } else if (
-        lowerCat.includes("energy") ||
-        lowerCat.includes("lotus") ||
-        lowerCat.includes("red bull") ||
-        lowerCat.includes("redbull") ||
-        lowerCat.includes("cold") ||
-        lowerCat.includes("iced") ||
-        lowerCat.includes("smoothie") ||
-        lowerCat.includes("boba") ||
-        lowerCat.includes("frappe") ||
-        lowerCat.includes("blended")
-      ) {
-        // Preserve distinct custom board categories (e.g. "Big Train", "Boba", "Kiddie Corner") if explicitly named,
-        // or map standard cold/energy into "Cold Bar & Energy"
-        canonicalCat =
-          rawCat &&
-          !["cold bar", "energy", "energy drinks", "iced drinks", "beverages"].includes(
-            lowerCat
+    // Generic catch-all bucket names that should be normalized into canonical SipPass families
+    const GENERIC_CATCHALL_CATEGORIES = new Set<string>([
+      "",
+      "drinks",
+      "drink",
+      "beverages",
+      "beverage",
+      "drinks & beverages",
+      "drinks & food",
+      "all items",
+      "menu items",
+      "uncategorized",
+      "general",
+      "other",
+      "items",
+      "pos items",
+      "staged items",
+      "espresso bar",
+      "espresso bar & classics",
+      "espresso",
+      "coffee",
+      "hot drinks",
+      "cold drinks",
+      "iced drinks",
+      "cold bar",
+      "cold bar & energy",
+      "energy",
+      "energy drinks",
+      "blended",
+      "tea",
+      "teas",
+      "food",
+      "food & pastries",
+      "pastries",
+      "bakery",
+      "retail",
+      "retail packaged",
+      "retail & bulk",
+      "merchandise",
+    ]);
+
+    const classifyIntoSipPassFamily = (
+      itemName: string,
+      rawCategoryName?: string,
+      classification?: string
+    ): { folderName: string; folderColor: TileColor } => {
+      const trimmedRawCat = (rawCategoryName || "").trim();
+      const lowerCat = trimmedRawCat.toLowerCase();
+      const combined = `${itemName} ${trimmedRawCat}`.toLowerCase();
+
+      // 1. Check if item has a specific extracted board categoryName (e.g. "Signature Mochas", "Kiddie Corner")
+      const isSpecificBoardCategory =
+        trimmedRawCat.length > 0 &&
+        !GENERIC_CATCHALL_CATEGORIES.has(lowerCat) &&
+        ![
+          "espresso classics",
+          "energy & lotus",
+          "cold bar & blended",
+          "teas & refreshers",
+          "bakery & food",
+          "retail & packaged",
+        ].includes(lowerCat);
+
+      if (isSpecificBoardCategory) {
+        let boardColor: TileColor = "amber";
+        if (
+          classification === "retail_item" ||
+          /retail|bean|merch|bagged|packaged/i.test(combined)
+        ) {
+          boardColor = "slate";
+        } else if (
+          classification === "food" ||
+          /bakery|food|pastry|pastries|sandwich|bagel|muffin|cookie|scone|croissant|burrito|breakfast|snack/i.test(
+            combined
           )
-            ? rawCat
-            : "Cold Bar & Energy";
-      } else if (
-        !rawCat ||
-        ["espresso bar", "espresso", "coffee", "hot drinks", "classics", "beverages"].includes(
-          lowerCat
-        )
-      ) {
-        canonicalCat = "Espresso Bar & Classics";
+        ) {
+          boardColor = "emerald";
+        } else if (
+          /energy|lotus|red\s*bull|redbull|rebel|soda|spritzer|cold|iced|frappe|smoothie|blended|boba|shake|freeze|slush|big train|tea|chai|matcha|lemonade|refresher|kiddie|kids/i.test(
+            combined
+          )
+        ) {
+          boardColor = "cyan";
+        }
+        return { folderName: trimmedRawCat, folderColor: boardColor };
       }
 
-      stagedCategoryByLabel.set(normalizeText(item.name), canonicalCat);
+      // 2. Canonical SipPass Customer-Facing Menu Families
+      // Family 6: Retail & Packaged ("slate")
+      if (
+        classification === "retail_item" ||
+        lowerCat === "retail & packaged" ||
+        /whole bean|coffee bean|12oz bag|1lb bag|5lb bag|retail|merch|tumbler|mug|shirt|hoodie|sticker|gift card|packaged|bagged/i.test(
+          combined
+        )
+      ) {
+        return { folderName: "Retail & Packaged", folderColor: "slate" };
+      }
+
+      // Family 5: Bakery & Food ("emerald")
+      if (
+        classification === "food" ||
+        lowerCat === "bakery & food" ||
+        /sandwich|bagel|muffin|pastry|pastries|cookie|scone|croissant|burrito|ciabatta|toast|pretzel|biscotti|cake|danish|donut|doughnut|wrap|panini|quiche|waffle|oatmeal|egg bite|food|bakery/i.test(
+          combined
+        )
+      ) {
+        return { folderName: "Bakery & Food", folderColor: "emerald" };
+      }
+
+      // Family 2: Energy & Lotus ("cyan")
+      if (
+        lowerCat === "energy & lotus" ||
+        /lotus|red\s*bull|redbull|energy|rebel|infusion|italian soda|\bsoda\b|spritzer|rockstar|monster|bull|charger|fizz/i.test(
+          combined
+        )
+      ) {
+        return { folderName: "Energy & Lotus", folderColor: "cyan" };
+      }
+
+      // Family 4: Teas & Refreshers ("cyan")
+      if (
+        lowerCat === "teas & refreshers" ||
+        /\btea\b|chai|matcha|lemonade|refresher|london fog|arnold palmer|palmer|earl grey|chamomile|hibiscus|green tea|black tea|herbal/i.test(
+          combined
+        )
+      ) {
+        return { folderName: "Teas & Refreshers", folderColor: "cyan" };
+      }
+
+      // Family 3: Cold Bar & Blended ("cyan")
+      if (
+        lowerCat === "cold bar & blended" ||
+        /frappe|frappuccino|smoothie|blended|boba|bubble|milkshake|shake|freeze|granita|slush|big train|frost|cooler|iced specialty|cold foam/i.test(
+          combined
+        )
+      ) {
+        return { folderName: "Cold Bar & Blended", folderColor: "cyan" };
+      }
+
+      // Family 1: Espresso Classics ("amber")
+      return { folderName: "Espresso Classics", folderColor: "amber" };
+    };
+
+    // Index staged catalog items by normalized name
+    const stagedMetaByLabel = new Map<
+      string,
+      {
+        folderName: string;
+        folderColor: TileColor;
+        isModifierOrSupply: boolean;
+      }
+    >();
+
+    stagedItems.forEach((item) => {
+      const isModOrSupply =
+        item.classification === "modifier_option" ||
+        item.classification === "operational_supply";
+      const resolved = classifyIntoSipPassFamily(
+        item.name,
+        item.categoryName,
+        item.classification
+      );
+      stagedMetaByLabel.set(normalizeText(item.name), {
+        ...resolved,
+        isModifierOrSupply: isModOrSupply,
+      });
     });
 
     const folderMap = new Map<
       string,
       { color: TileColor; items: GridTile[] }
     >();
-
-    const inferCategoryForTile = (
-      tile: GridTile
-    ): { folderName: string; folderColor: TileColor } => {
-      const cleanedLabel = normalizeText(tile.label);
-
-      // Modifiers (emerald or prefixed with "+ ")
-      if (tile.color === "emerald" || tile.label.trim().startsWith("+")) {
-        return {
-          folderName: "Speed Modifiers & Add-Ons",
-          folderColor: "emerald",
-        };
-      }
-
-      // Direct match or partial match against stagedItems
-      const directStagedCat = stagedCategoryByLabel.get(cleanedLabel);
-      if (directStagedCat) {
-        const folderColor: TileColor =
-          directStagedCat === "Retail Packaged" ||
-          directStagedCat === "Food & Pastries"
-            ? "slate"
-            : directStagedCat === "Cold Bar & Energy"
-            ? "cyan"
-            : tile.color !== "blank"
-            ? tile.color
-            : "amber";
-        return { folderName: directStagedCat, folderColor };
-      }
-
-      for (const [stagedKey, catName] of stagedCategoryByLabel.entries()) {
-        if (
-          stagedKey.length > 2 &&
-          (cleanedLabel.includes(stagedKey) || stagedKey.includes(cleanedLabel))
-        ) {
-          const folderColor: TileColor =
-            catName === "Retail Packaged" || catName === "Food & Pastries"
-              ? "slate"
-              : catName === "Cold Bar & Energy"
-              ? "cyan"
-              : tile.color !== "blank"
-              ? tile.color
-              : "amber";
-          return { folderName: catName, folderColor };
-        }
-      }
-
-      // Fallback heuristics based on tile color & keywords
-      if (
-        tile.color === "cyan" ||
-        /cold|iced|lotus|energy|bull|smoothie|frappe|boba|lemonade|refresher/i.test(
-          tile.label
-        )
-      ) {
-        return { folderName: "Cold Bar & Energy", folderColor: "cyan" };
-      }
-      if (
-        /bagel|muffin|croissant|burrito|ciabatta|cookie|scone|toast|sandwich|food|pastry/i.test(
-          tile.label
-        )
-      ) {
-        return { folderName: "Food & Pastries", folderColor: "slate" };
-      }
-      if (tile.color === "slate") {
-        return { folderName: "Retail Packaged", folderColor: "slate" };
-      }
-
-      return { folderName: "Espresso Bar & Classics", folderColor: "amber" };
-    };
 
     const assignedTiles = allPagesFlatTiles.filter(
       (t) =>
@@ -1120,7 +1194,36 @@ export default function BarMaidDashboard() {
     );
 
     assignedTiles.forEach((tile) => {
-      const { folderName, folderColor } = inferCategoryForTile(tile);
+      const rawLabel = tile.label.trim();
+      const cleanedLabel = normalizeText(rawLabel);
+
+      // Strictly exclude standalone modifier options (prefixed with "+", in stagedModifiers, or classified as modifier_option)
+      if (rawLabel.startsWith("+") || modifierNameSet.has(cleanedLabel)) {
+        return;
+      }
+
+      // Check direct or partial match in stagedMetaByLabel
+      let matchedMeta = stagedMetaByLabel.get(cleanedLabel);
+      if (!matchedMeta) {
+        for (const [stagedKey, meta] of stagedMetaByLabel.entries()) {
+          if (
+            stagedKey.length > 2 &&
+            (cleanedLabel.includes(stagedKey) ||
+              stagedKey.includes(cleanedLabel))
+          ) {
+            matchedMeta = meta;
+            break;
+          }
+        }
+      }
+
+      if (matchedMeta?.isModifierOrSupply) {
+        return;
+      }
+
+      const { folderName, folderColor } =
+        matchedMeta || classifyIntoSipPassFamily(rawLabel);
+
       const existing = folderMap.get(folderName);
       if (existing) {
         existing.items.push(tile);
@@ -1129,51 +1232,18 @@ export default function BarMaidDashboard() {
       }
     });
 
-    // If no tiles are assigned yet, still surface the canonical SipPass category shells
-    if (folderMap.size === 0) {
-      return [
-        {
-          folderName: "Espresso Bar & Classics",
-          itemCount: 0,
-          color: "amber",
-          items: [],
-        },
-        {
-          folderName: "Cold Bar & Energy",
-          itemCount: 0,
-          color: "cyan",
-          items: [],
-        },
-        {
-          folderName: "Food & Pastries",
-          itemCount: 0,
-          color: "slate",
-          items: [],
-        },
-        {
-          folderName: "Retail Packaged",
-          itemCount: 0,
-          color: "slate",
-          items: [],
-        },
-        {
-          folderName: "Speed Modifiers & Add-Ons",
-          itemCount: 0,
-          color: "emerald",
-          items: [],
-        },
-      ];
-    }
-
     const canonicalOrder = [
-      "Espresso Bar & Classics",
-      "Cold Bar & Energy",
-      "Food & Pastries",
-      "Retail Packaged",
-      "Speed Modifiers & Add-Ons",
+      "Espresso Classics",
+      "Energy & Lotus",
+      "Cold Bar & Blended",
+      "Teas & Refreshers",
+      "Bakery & Food",
+      "Retail & Packaged",
     ];
 
+    // Suppress any empty category folders that have 0 items
     return Array.from(folderMap.entries())
+      .filter(([, data]) => data.items.length > 0)
       .map(([folderName, data]) => ({
         folderName,
         itemCount: data.items.length,
@@ -1188,7 +1258,7 @@ export default function BarMaidDashboard() {
         if (idxB !== -1) return 1;
         return a.folderName.localeCompare(b.folderName);
       });
-  }, [allPagesFlatTiles, stagedItems]);
+  }, [allPagesFlatTiles, stagedItems, stagedModifiers]);
 
   // Clear single active tile
   const handleClearCurrentTile = () => {
@@ -1705,13 +1775,24 @@ export default function BarMaidDashboard() {
       const hydratedDrinksAndFood: StagedItem[] = (
         restored.stagedItems || []
       )
-        .filter((item) => item.included !== false)
+        .filter(
+          (item) =>
+            item.included !== false &&
+            (item.classification as string) !== "modifier_option" &&
+            (item.classification as string) !== "operational_supply"
+        )
         .map((item) => ({
           name: item.name,
           categoryName:
             item.classification === "food"
-              ? "Food & Pastries"
-              : item.categoryName || "Espresso Bar",
+              ? item.categoryName &&
+                !["drinks", "beverages", "espresso bar"].includes(
+                  item.categoryName.trim().toLowerCase()
+                )
+                ? item.categoryName
+                : "Bakery & Food"
+              : item.categoryName || "",
+          classification: item.classification,
           variations:
             item.variations && item.variations.length > 0
               ? item.variations
@@ -1723,7 +1804,8 @@ export default function BarMaidDashboard() {
         .filter((item) => item.included !== false)
         .map((item) => ({
           name: item.name,
-          categoryName: "Retail Packaged",
+          categoryName: "Retail & Packaged",
+          classification: "retail_item" as const,
           variations: [
             {
               size: item.sku || "Unit",
@@ -2718,8 +2800,13 @@ export default function BarMaidDashboard() {
                           SipPass Canonical Folders
                         </span>
                         <span className="text-xs text-slate-400">
-                          {categoryFolders.length} Category Groups •{" "}
-                          {totalAssignedTiles} Assigned Items
+                          {categoryFolders.length} Category{" "}
+                          {categoryFolders.length === 1 ? "Group" : "Groups"} •{" "}
+                          {categoryFolders.reduce(
+                            (sum, f) => sum + f.itemCount,
+                            0
+                          )}{" "}
+                          Catalog Products (Modifiers Attached to Items)
                         </span>
                       </div>
                       {activeCategoryFolder !== null && (
@@ -2779,36 +2866,43 @@ export default function BarMaidDashboard() {
                         </div>
                       ) : activeCategoryFolder === null ? (
                         /* Top-Level Category Folders View (iPad 5-col) */
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 py-2">
-                          {categoryFolders.map((folder) => (
-                            <button
-                              key={folder.folderName}
-                              type="button"
-                              onClick={() =>
-                                setActiveCategoryFolder(folder.folderName)
-                              }
-                              className={`h-28 p-3.5 rounded-xl border-2 flex flex-col justify-between text-left transition-all duration-150 hover:scale-[1.02] cursor-pointer shadow-lg ${getColorClasses(
-                                folder.color
-                              )}`}
-                            >
-                              <div className="flex items-center justify-between w-full">
-                                <span className="text-lg">📁</span>
-                                <span className="px-2 py-0.5 rounded-full bg-slate-950/30 text-[10px] font-mono font-bold">
-                                  {folder.itemCount}{" "}
-                                  {folder.itemCount === 1 ? "item" : "items"}
-                                </span>
-                              </div>
-                              <div>
-                                <p className="text-xs font-extrabold leading-snug line-clamp-2">
-                                  {folder.folderName}
-                                </p>
-                                <p className="text-[10px] font-mono opacity-80 mt-0.5">
-                                  Tap to open →
-                                </p>
-                              </div>
-                            </button>
-                          ))}
-                        </div>
+                        categoryFolders.length === 0 ? (
+                          <div className="py-12 text-center text-xs font-mono text-slate-500">
+                            No catalog products assigned yet — load staged items
+                            or assign tiles to populate SipPass folders.
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-5 gap-3 py-2">
+                            {categoryFolders.map((folder) => (
+                              <button
+                                key={folder.folderName}
+                                type="button"
+                                onClick={() =>
+                                  setActiveCategoryFolder(folder.folderName)
+                                }
+                                className={`h-28 p-3.5 rounded-xl border-2 flex flex-col justify-between text-left transition-all duration-150 hover:scale-[1.02] cursor-pointer shadow-lg ${getColorClasses(
+                                  folder.color
+                                )}`}
+                              >
+                                <div className="flex items-center justify-between w-full">
+                                  <span className="text-lg">📁</span>
+                                  <span className="px-2 py-0.5 rounded-full bg-slate-950/30 text-[10px] font-mono font-bold">
+                                    {folder.itemCount}{" "}
+                                    {folder.itemCount === 1 ? "item" : "items"}
+                                  </span>
+                                </div>
+                                <div>
+                                  <p className="text-xs font-extrabold leading-snug line-clamp-2">
+                                    {folder.folderName}
+                                  </p>
+                                  <p className="text-[10px] font-mono opacity-80 mt-0.5">
+                                    Tap to open →
+                                  </p>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )
                       ) : (
                         /* Drilled-in Category Folder Items View (iPad 5-col) */
                         <div className="space-y-3">
@@ -2944,30 +3038,36 @@ export default function BarMaidDashboard() {
                             </div>
                           ) : activeCategoryFolder === null ? (
                             /* Top-Level Category Folders View (Terminal 3-col) */
-                            <div className="grid grid-cols-2 gap-2.5">
-                              {categoryFolders.map((folder) => (
-                                <button
-                                  key={folder.folderName}
-                                  type="button"
-                                  onClick={() =>
-                                    setActiveCategoryFolder(folder.folderName)
-                                  }
-                                  className={`h-24 p-3 rounded-xl border-2 flex flex-col justify-between text-left transition-all duration-150 hover:scale-[1.02] cursor-pointer shadow-md ${getColorClasses(
-                                    folder.color
-                                  )}`}
-                                >
-                                  <div className="flex items-center justify-between w-full">
-                                    <span className="text-base">📁</span>
-                                    <span className="px-1.5 py-0.5 rounded-full bg-slate-950/30 text-[10px] font-mono font-bold">
-                                      {folder.itemCount} items
-                                    </span>
-                                  </div>
-                                  <p className="text-xs font-extrabold leading-tight line-clamp-2">
-                                    {folder.folderName}
-                                  </p>
-                                </button>
-                              ))}
-                            </div>
+                            categoryFolders.length === 0 ? (
+                              <div className="py-10 text-center text-xs font-mono text-slate-500">
+                                No catalog products assigned yet.
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-3 gap-2">
+                                {categoryFolders.map((folder) => (
+                                  <button
+                                    key={folder.folderName}
+                                    type="button"
+                                    onClick={() =>
+                                      setActiveCategoryFolder(folder.folderName)
+                                    }
+                                    className={`h-24 p-2.5 rounded-xl border-2 flex flex-col justify-between text-left transition-all duration-150 hover:scale-[1.02] cursor-pointer shadow-md ${getColorClasses(
+                                      folder.color
+                                    )}`}
+                                  >
+                                    <div className="flex items-center justify-between w-full">
+                                      <span className="text-sm">📁</span>
+                                      <span className="px-1.5 py-0.5 rounded-full bg-slate-950/30 text-[9px] font-mono font-bold">
+                                        {folder.itemCount}
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] font-extrabold leading-tight line-clamp-2">
+                                      {folder.folderName}
+                                    </p>
+                                  </button>
+                                ))}
+                              </div>
+                            )
                           ) : (
                             /* Drilled-in Category Folder Items View (Terminal 3-col) */
                             <div className="space-y-2.5">
