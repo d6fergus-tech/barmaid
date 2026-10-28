@@ -426,7 +426,7 @@ export default function BarMaidMasterDashboardPage() {
     {
       stepNumber: "04",
       title: "5x4 Register Layout Studio",
-      href: "/",
+      href: `/?merchant=${encodeURIComponent(activeSlug)}&tab=studio`,
       badgeText:
         drinksCount + retailCount > 0
           ? `${drinksCount + retailCount} Grid Items`
@@ -726,7 +726,7 @@ export default function BarMaidMasterDashboardPage() {
                       Jump to Intake →
                     </Link>
                     <Link
-                      href="/"
+                      href={`/?merchant=${encodeURIComponent(activeSlug)}&tab=studio`}
                       className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 font-bold text-xs transition"
                     >
                       Jump to 5x4 Studio →
@@ -914,7 +914,9 @@ export default function BarMaidMasterDashboardPage() {
                                   type="button"
                                   onClick={() => {
                                     handleSelectClientFolder(session);
-                                    router.push("/");
+                                    router.push(
+                                      `/?merchant=${encodeURIComponent(slug)}&tab=studio`
+                                    );
                                   }}
                                   className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-amber-300 text-xs font-semibold transition cursor-pointer"
                                 >

@@ -259,7 +259,7 @@ export default function OnboardingReviewAndSyncPage() {
               ← POS Connect
             </Link>
             <Link
-              href="/"
+              href={`/?merchant=${encodeURIComponent(resolvedSlug)}&tab=studio`}
               className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 text-xs font-bold transition"
             >
               Open 5x4 Layout Studio →

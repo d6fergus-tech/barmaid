@@ -468,6 +468,8 @@ const buildAutoOptimizedPages = (
 
 export default function BarMaidDashboard() {
   const router = useRouter();
+  const [isRedirectingToDashboard, setIsRedirectingToDashboard] =
+    useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<
     "intake" | "audit" | "studio" | "deploy"
   >("studio");
@@ -724,6 +726,13 @@ export default function BarMaidDashboard() {
           : null;
       const queryMerchant = searchParams?.get("merchant")?.trim();
       const queryTab = searchParams?.get("tab")?.trim();
+
+      // Redirect root URL (/) with no ?merchant= or ?tab= query parameters directly to /dashboard
+      if (!queryMerchant && !queryTab) {
+        setIsRedirectingToDashboard(true);
+        router.replace("/dashboard");
+        return;
+      }
 
       if (
         queryTab === "intake" ||
@@ -1751,17 +1760,28 @@ export default function BarMaidDashboard() {
     }
   };
 
+  if (isRedirectingToDashboard) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-300 flex items-center justify-center font-sans">
+        <div className="flex items-center space-x-3 text-xs font-mono text-amber-400">
+          <span className="h-2.5 w-2.5 rounded-full bg-amber-400 animate-ping" />
+          <span>Opening Master Command Dashboard...</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Unified Top Command Navigation Bar */}
       <div className="border-b border-slate-800/80 bg-slate-950/95 backdrop-blur px-6 py-2.5">
         <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Left button: ← Dashboard */}
+          {/* Left button: ← Master Dashboard */}
           <Link
             href="/dashboard"
             className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/50 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
           >
-            <span>← Dashboard</span>
+            <span>← Master Dashboard</span>
           </Link>
 
           {/* Center badge: Active Client DBA & Slug */}
@@ -1845,12 +1865,20 @@ export default function BarMaidDashboard() {
             </div>
           </div>
 
-          <Link
-            href="/onboard/connect"
-            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 hover:text-amber-200 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
-          >
-            <span>← Back to Onboarding Wizard (Step 3: POS Connect)</span>
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href="/dashboard"
+              className="px-3.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-amber-500/40 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
+            >
+              <span>← Master Dashboard</span>
+            </Link>
+            <Link
+              href="/onboard/connect"
+              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 hover:text-white text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
+            >
+              <span>← Step 3: POS Connect</span>
+            </Link>
+          </div>
         </div>
 
         {/* Client Badges */}
@@ -2454,8 +2482,44 @@ export default function BarMaidDashboard() {
                 </p>
               </div>
 
-              {/* Archetype Quick Switcher & Grid Actions */}
+              {/* Archetype Quick Switcher, Auto-Optimize & Grid Actions */}
               <div className="flex flex-wrap items-center gap-2">
+                {/* Compact Live Audit Health Score Pill */}
+                <div
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-mono flex items-center gap-2 ${
+                    isOptimized
+                      ? "bg-emerald-950/80 border-emerald-500/50 text-emerald-300"
+                      : "bg-slate-900 border-slate-800 text-slate-300"
+                  }`}
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      isOptimized ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
+                    }`}
+                  />
+                  <span>
+                    Health Score:{" "}
+                    <strong className="text-white">
+                      {auditMetrics.healthScore}/100
+                    </strong>
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span
+                    className={
+                      isOptimized
+                        ? "text-emerald-300 font-bold"
+                        : "text-rose-400 font-semibold"
+                    }
+                  >
+                    {auditMetrics.frictionLabel}
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span className="text-amber-300 font-bold">
+                    {auditMetrics.averageBaristaTaps.toFixed(1)} Avg Taps
+                  </span>
+                </div>
+
+                {/* Archetype Template Selector */}
                 <div className="flex items-center space-x-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
                   {(
                     ["fast-cash", "specialty", "color-coded"] as ArchetypeId[]
@@ -2480,6 +2544,25 @@ export default function BarMaidDashboard() {
                     </button>
                   ))}
                 </div>
+
+                {/* Auto-Optimize & Undo Controls */}
+                {!isOptimized ? (
+                  <button
+                    type="button"
+                    onClick={handleAutoOptimizeCatalog}
+                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs rounded-lg shadow-md shadow-amber-500/20 transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>⚡ Auto-Optimize Layout</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleUndoOptimization}
+                    className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 hover:text-white font-semibold text-xs rounded-lg transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>↺ Undo Optimization</span>
+                  </button>
+                )}
 
                 {(stagedItems.length > 0 || stagedModifiers.length > 0) && (
                   <button
@@ -3166,20 +3249,62 @@ export default function BarMaidDashboard() {
                   )}
                 </div>
 
-                {/* Lock In & Proceed */}
+                {/* Lock In & Proceed to Step 5: Review & Cloud Sync */}
                 <div className="pt-4 border-t border-slate-800 space-y-2">
-                  <button
-                    onClick={() => setActiveTab("deploy")}
-                    className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center justify-center space-x-2 cursor-pointer"
+                  <Link
+                    href={`/onboard/review?merchant=${encodeURIComponent(
+                      merchantSlug
+                    )}`}
+                    className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center justify-center space-x-2"
                   >
-                    <span>Lock Layout &amp; Proceed</span>
+                    <span>Step 5: Review &amp; Cloud Sync</span>
                     <span>→</span>
-                  </button>
+                  </Link>
                   <p className="text-[11px] text-center text-slate-500">
-                    Saves all {pages.length} screen pages for live register
-                    blueprint.
+                    Saves all {pages.length} screen pages &amp; routes to canonical
+                    POS/Supabase publish.
                   </p>
                 </div>
+              </div>
+            </div>
+
+            {/* Bottom Studio Pipeline Bar */}
+            <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4 shadow-lg">
+              <div className="flex flex-wrap items-center gap-3">
+                <Link
+                  href="/dashboard"
+                  className="px-4 py-2.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-amber-400 hover:text-amber-300 text-xs font-bold transition"
+                >
+                  ← Master Dashboard
+                </Link>
+                <Link
+                  href="/onboard/connect"
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 hover:text-white text-xs font-semibold transition"
+                >
+                  ← Back to Step 3: POS Connect
+                </Link>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-xs font-mono text-slate-400">
+                  {totalAssignedTiles} Active Buttons •{" "}
+                  {navigationMode === "flat-speed"
+                    ? "Flat Speed Grid"
+                    : "Category-First (SipPass)"}{" "}
+                  •{" "}
+                  {hardwareFormFactor === "ipad-landscape"
+                    ? "iPad 5×4"
+                    : "Square Terminal"}
+                </span>
+                <Link
+                  href={`/onboard/review?merchant=${encodeURIComponent(
+                    merchantSlug
+                  )}`}
+                  className="px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition shadow-md shadow-amber-500/20 flex items-center space-x-2"
+                >
+                  <span>Proceed to Step 5: Review &amp; Cloud Sync</span>
+                  <span>→</span>
+                </Link>
               </div>
             </div>
           </div>
