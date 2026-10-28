@@ -279,6 +279,31 @@ type CategoryFolderGroup = {
   items: GridTile[];
 };
 
+export const stripSizePrefix = (label: string): string =>
+  label
+    .replace(
+      /^(8\s*oz|12\s*oz|16\s*oz|20\s*oz|24\s*oz|32\s*oz)\s+/i,
+      ""
+    )
+    .trim();
+
+export const sanitizePagesLabels = (pagesInput: GridTile[][]): GridTile[][] =>
+  pagesInput.map((page) =>
+    page.map((tile) => {
+      if (
+        tile.color === "blank" ||
+        tile.label === "[Empty Slot]" ||
+        tile.label === "[Open Slot]"
+      ) {
+        return tile;
+      }
+      return {
+        ...tile,
+        label: stripSizePrefix(tile.label),
+      };
+    })
+  );
+
 const createEmptyPage = (pageIndex: number): GridTile[] => {
   const startIndex = pageIndex * 20 + 1;
   return Array.from({ length: 20 }, (_, i) => ({
@@ -324,26 +349,26 @@ const buildPagesFromCatalog = (
     color: TileColor;
     categoryName?: string;
   }> = sorted.map((item) => {
-    const primaryVar = item.variations[0];
-    const hasMultipleSizes = item.variations.length > 1;
-    const label =
-      archetype === "fast-cash" && primaryVar?.size
-        ? `${primaryVar.size} ${item.name}`
-        : item.name;
-    const price =
-      archetype === "specialty" && hasMultipleSizes
-        ? "Select Size"
-        : archetype === "color-coded" && hasMultipleSizes && primaryVar
-        ? `$${primaryVar.price.toFixed(2)}+`
-        : primaryVar
-        ? `$${primaryVar.price.toFixed(2)}`
-        : "$4.50";
-
     const canonical = normalizeToCanonicalSipPassCategory(
       item.name,
       item.categoryName,
       item.classification
     );
+    const isBeverage =
+      canonical.folderColor === "amber" || canonical.folderColor === "cyan";
+    const validPrices = item.variations
+      .map((v) => v.price)
+      .filter((p) => typeof p === "number" && p > 0);
+    const lowestPrice =
+      validPrices.length > 0 ? Math.min(...validPrices) : 4.5;
+    const hasMultipleSizes = item.variations.length > 1;
+    const label = stripSizePrefix(item.name);
+    const price =
+      archetype === "specialty" && isBeverage && hasMultipleSizes
+        ? `$${lowestPrice.toFixed(2)}+`
+        : isBeverage || hasMultipleSizes
+        ? `$${lowestPrice.toFixed(2)}+`
+        : `$${lowestPrice.toFixed(2)}`;
 
     return {
       label,
@@ -409,25 +434,7 @@ const buildAutoOptimizedPages = (
 ): GridTile[][] => {
   if (items.length === 0 && modifiers.length === 0) {
     if (fallbackCurrentPages && fallbackCurrentPages.length > 0) {
-      return fallbackCurrentPages.map((page) =>
-        page.map((tile) => {
-          if (tile.color === "blank" || tile.label === "[Empty Slot]") {
-            return tile;
-          }
-          const isBeverageTile =
-            tile.color === "amber" || tile.color === "cyan";
-          const cleanLabel = tile.label
-            .replace(/^(8oz|12oz|16oz|20oz|24oz|32oz)\s+/i, "")
-            .trim();
-          return {
-            ...tile,
-            label:
-              archetype === "fast-cash" && isBeverageTile
-                ? `16oz ${cleanLabel}`
-                : cleanLabel,
-          };
-        })
-      );
+      return sanitizePagesLabels(fallbackCurrentPages);
     }
     return [createEmptyPage(0)];
   }
@@ -497,51 +504,29 @@ const buildAutoOptimizedPages = (
     color: TileColor;
     categoryName?: string;
   }> = sortedItems.map((item) => {
-    const color = getItemColor(item.name, item.categoryName);
+    const canonical = normalizeToCanonicalSipPassCategory(
+      item.name,
+      item.categoryName,
+      item.classification
+    );
+    const color = canonical.folderColor;
     const isBeverage = color === "amber" || color === "cyan";
     const hasMultipleSizes = item.variations.length > 1;
-    const sixteenOzVar =
-      item.variations.find((v) => /16\s*oz/i.test(v.size)) ||
-      item.variations[0];
-    const primaryVar = item.variations[0];
-    const resolvedSixteenPrice = sixteenOzVar ? sixteenOzVar.price : 4.75;
-    const resolvedBasePrice = primaryVar ? primaryVar.price : 4.5;
-    const cleanName = item.name
-      .replace(/^(8oz|12oz|16oz|20oz|24oz|32oz)\s+/i, "")
-      .trim();
+    const validPrices = item.variations
+      .map((v) => v.price)
+      .filter((p) => typeof p === "number" && p > 0);
+    const lowestPrice =
+      validPrices.length > 0 ? Math.min(...validPrices) : 4.5;
+    const cleanName = stripSizePrefix(item.name);
 
-    if (archetype === "specialty") {
-      // Specialty (Optimized): Beverage base families grouped by sales frequency to minimize tap distance when opening size sheets
-      return {
-        label: cleanName,
-        price:
-          isBeverage && hasMultipleSizes
-            ? "Select Size"
-            : `$${resolvedBasePrice.toFixed(2)}`,
-        color,
-        categoryName: item.categoryName,
-      };
-    }
-
-    if (archetype === "color-coded") {
-      // Color-Zoned (Optimized): Station color blocks with base+ pricing indicator
-      return {
-        label: cleanName,
-        price:
-          isBeverage && hasMultipleSizes
-            ? `$${resolvedBasePrice.toFixed(2)}+`
-            : `$${resolvedBasePrice.toFixed(2)}`,
-        color,
-        categoryName: item.categoryName,
-      };
-    }
-
-    // Fast-Cash (Optimized): 16oz single-tap top-velocity drink anchors in prime thumb reach zones
     return {
-      label: isBeverage ? `16oz ${cleanName}` : cleanName,
-      price: `$${resolvedSixteenPrice.toFixed(2)}`,
+      label: cleanName,
+      price:
+        isBeverage || hasMultipleSizes
+          ? `$${lowestPrice.toFixed(2)}+`
+          : `$${lowestPrice.toFixed(2)}`,
       color,
-      categoryName: item.categoryName,
+      categoryName: canonical.folderName,
     };
   });
 
@@ -613,6 +598,8 @@ export default function BarMaidDashboard() {
     useState<string>("Unassigned Merchant");
   const [posAuth, setPosAuth] = useState<PosAuthRecord | null>(null);
   const [savedSessions, setSavedSessions] = useState<OnboardingSession[]>([]);
+  const [activeRulesConfig, setActiveRulesConfig] =
+    useState<BusinessRulesConfig | null>(null);
 
   // Live Square Raw Data Store
   const [squareItems, setSquareItems] = useState<SquareRawItem[]>([]);
@@ -904,6 +891,7 @@ export default function BarMaidDashboard() {
 
       setMerchantSlug(resolvedSlug);
       setMerchantDisplayName(resolvedDisplayName);
+      setActiveRulesConfig(parsedRules);
 
       if (parsedRules?.navigationMode) {
         setNavigationMode(parsedRules.navigationMode);
@@ -936,7 +924,7 @@ export default function BarMaidDashboard() {
               (item.classification as string) !== "operational_supply"
           )
           .map((item) => ({
-            name: item.name,
+            name: stripSizePrefix(item.name),
             categoryName: normalizeToCanonicalSipPassCategory(
               item.name,
               item.categoryName,
@@ -953,7 +941,7 @@ export default function BarMaidDashboard() {
         const hydratedRetail: StagedItem[] = (parsedStage.retailItems || [])
           .filter((item) => item.included !== false)
           .map((item) => ({
-            name: item.name,
+            name: stripSizePrefix(item.name),
             categoryName: "Retail & Packaged",
             classification: "retail_item" as const,
             variations: [
@@ -998,7 +986,10 @@ export default function BarMaidDashboard() {
             : null);
 
         if (hydratedSnapshot) {
-          setPreOptimizeSnapshot(hydratedSnapshot);
+          setPreOptimizeSnapshot({
+            ...hydratedSnapshot,
+            pages: sanitizePagesLabels(hydratedSnapshot.pages || []),
+          });
         }
 
         const hydratedArchetype = fromTemplateStorageCode(
@@ -1012,7 +1003,7 @@ export default function BarMaidDashboard() {
           const hydratedOptPages =
             Array.isArray(parsedRules.optimizedGridPages) &&
             parsedRules.optimizedGridPages.length > 0
-              ? parsedRules.optimizedGridPages
+              ? sanitizePagesLabels(parsedRules.optimizedGridPages)
               : buildAutoOptimizedPages(
                   combinedStagedItems,
                   hydratedModifiers,
@@ -1388,6 +1379,126 @@ export default function BarMaidDashboard() {
       setActiveCategoryFolder(null);
     }
   }, [activeCategoryFolder, categoryFolders]);
+
+  // Resolve read-only Attached Modifiers & Sizes tags for the active tile in the Tile Inspector
+  const activeTileAttachments = useMemo(() => {
+    const rawLabel = (activeTile.label || "").trim();
+    if (
+      !rawLabel ||
+      activeTile.color === "blank" ||
+      rawLabel === "[Empty Slot]" ||
+      rawLabel === "[Open Slot]" ||
+      rawLabel.startsWith("+ ")
+    ) {
+      return { isBeverage: false, tags: [] as string[] };
+    }
+
+    const cleanedActive = stripSizePrefix(rawLabel)
+      .replace(/\s+\(base\)$/i, "")
+      .toLowerCase()
+      .trim();
+
+    const matchedItem = stagedItems.find((item) => {
+      const cleanedItem = stripSizePrefix(item.name)
+        .replace(/\s+\(base\)$/i, "")
+        .toLowerCase()
+        .trim();
+      return (
+        cleanedItem === cleanedActive ||
+        (cleanedItem.length > 2 &&
+          (cleanedActive.includes(cleanedItem) ||
+            cleanedItem.includes(cleanedActive)))
+      );
+    });
+
+    // If explicitly set to Bakery/Food ("emerald") or Modifier/Retail ("slate"), or classified as food/retail
+    if (
+      activeTile.color === "emerald" ||
+      activeTile.color === "slate" ||
+      matchedItem?.classification === "food" ||
+      matchedItem?.classification === "retail_item" ||
+      matchedItem?.classification === "operational_supply"
+    ) {
+      return { isBeverage: false, tags: [] as string[] };
+    }
+
+    const canonicalCat = normalizeToCanonicalSipPassCategory(
+      rawLabel,
+      activeTile.categoryName || matchedItem?.categoryName,
+      matchedItem?.classification
+    ).folderName;
+
+    if (
+      canonicalCat === "Bakery & Food" ||
+      canonicalCat === "Retail & Packaged"
+    ) {
+      return { isBeverage: false, tags: [] as string[] };
+    }
+
+    // 1. Resolve Sizes tag from item variations or BusinessRulesConfig sizeMatrix
+    let sizeList: string[] = [];
+    if (matchedItem && matchedItem.variations.length > 1) {
+      sizeList = matchedItem.variations
+        .map((v) => v.size.trim())
+        .filter((s) => Boolean(s) && !/^(regular|unit)$/i.test(s));
+    }
+    if (sizeList.length === 0 && activeRulesConfig?.sizeMatrix?.length) {
+      const enabledSizes = activeRulesConfig.sizeMatrix
+        .filter((s) => s.enabled)
+        .map((s) => s.size);
+      if (enabledSizes.length > 0) {
+        sizeList = enabledSizes;
+      }
+    }
+    if (sizeList.length === 0) {
+      sizeList =
+        activeTile.color === "cyan"
+          ? ["16oz", "24oz", "32oz"]
+          : ["12oz", "16oz", "20oz"];
+    }
+
+    // 2. Resolve Dairy options tag from stagedModifiers or canonical defaults
+    const dairyMatches = stagedModifiers
+      .map((m) => stripSizePrefix(m.name))
+      .filter((name) =>
+        /\b(oat|almond|soy|coconut|breve|whole|skim|nonfat|half\s*&\s*half|heavy\s*cream|hemp|macadamia|milk)\b/i.test(
+          name
+        )
+      )
+      .map((name) => name.replace(/\s*milk$/i, "").trim());
+
+    const uniqueDairy = Array.from(
+      new Set(["Whole", ...dairyMatches, "Oat", "Almond"])
+    ).slice(0, 4);
+
+    // 3. Resolve Flavors / Syrups attachment tag
+    const flavorModCount = stagedModifiers.filter(
+      (m) =>
+        !/\b(oat|almond|soy|coconut|breve|whole|skim|nonfat|milk)\b/i.test(
+          m.name
+        )
+    ).length;
+
+    const tags = [
+      `Sizes: ${sizeList.join(", ")}`,
+      `Dairy: ${uniqueDairy.join(", ")}`,
+      flavorModCount > 0
+        ? `Flavors: Attached (${flavorModCount})`
+        : "Flavors: Attached",
+    ];
+
+    return {
+      isBeverage: true,
+      tags,
+    };
+  }, [
+    activeTile.label,
+    activeTile.color,
+    activeTile.categoryName,
+    stagedItems,
+    stagedModifiers,
+    activeRulesConfig,
+  ]);
 
   // Clear single active tile
   const handleClearCurrentTile = () => {
@@ -1770,8 +1881,10 @@ export default function BarMaidDashboard() {
       preOptimizeSnapshot &&
       Array.isArray(preOptimizeSnapshot.pages) &&
       preOptimizeSnapshot.pages.length > 0
-        ? preOptimizeSnapshot.pages.map((page) =>
-            page.map((tile) => ({ ...tile }))
+        ? sanitizePagesLabels(
+            preOptimizeSnapshot.pages.map((page) =>
+              page.map((tile) => ({ ...tile }))
+            )
           )
         : buildPagesFromCatalog(
             stagedItems,
@@ -1807,12 +1920,28 @@ export default function BarMaidDashboard() {
   };
 
   const handleAssignItemToTile = (item: StagedItem) => {
-    const primaryVar = item.variations[0];
+    const canonical = normalizeToCanonicalSipPassCategory(
+      item.name,
+      item.categoryName,
+      item.classification
+    );
+    const isBeverage =
+      canonical.folderColor === "amber" || canonical.folderColor === "cyan";
+    const validPrices = item.variations
+      .map((v) => v.price)
+      .filter((p) => typeof p === "number" && p > 0);
+    const lowestPrice =
+      validPrices.length > 0 ? Math.min(...validPrices) : 4.5;
+    const hasMultipleSizes = item.variations.length > 1;
+
     updateActiveTile({
-      label: `${primaryVar?.size ? primaryVar.size + " " : ""}${item.name}`,
-      price: primaryVar ? `$${primaryVar.price.toFixed(2)}` : "$4.50",
-      color: getItemColor(item.name, item.categoryName),
-      categoryName: item.categoryName,
+      label: stripSizePrefix(item.name),
+      price:
+        isBeverage || hasMultipleSizes
+          ? `$${lowestPrice.toFixed(2)}+`
+          : `$${lowestPrice.toFixed(2)}`,
+      color: canonical.folderColor,
+      categoryName: canonical.folderName,
     });
   };
 
@@ -1902,6 +2031,7 @@ export default function BarMaidDashboard() {
 
       setMerchantSlug(nextSlug);
       setMerchantDisplayName(nextDisplay);
+      setActiveRulesConfig(found.rulesConfig || null);
 
       const hydratedDrinksAndFood: StagedItem[] = (
         restored.stagedItems || []
@@ -1913,7 +2043,7 @@ export default function BarMaidDashboard() {
             (item.classification as string) !== "operational_supply"
         )
         .map((item) => ({
-          name: item.name,
+          name: stripSizePrefix(item.name),
           categoryName: normalizeToCanonicalSipPassCategory(
             item.name,
             item.categoryName,
@@ -1930,7 +2060,7 @@ export default function BarMaidDashboard() {
       const hydratedRetail: StagedItem[] = (restored.retailItems || [])
         .filter((item) => item.included !== false)
         .map((item) => ({
-          name: item.name,
+          name: stripSizePrefix(item.name),
           categoryName: "Retail & Packaged",
           classification: "retail_item" as const,
           variations: [
@@ -3432,6 +3562,29 @@ export default function BarMaidDashboard() {
                         </button>
                       ))}
                     </div>
+                  </div>
+
+                  {/* Attached Modifiers & Sizes (Read-Only) */}
+                  <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                    <label className="text-xs font-medium text-slate-300 block">
+                      Attached Modifiers &amp; Sizes
+                    </label>
+                    {activeTileAttachments.isBeverage ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {activeTileAttachments.tags.map((tag, idx) => (
+                          <span
+                            key={`mod-tag-${idx}`}
+                            className="inline-flex items-center px-2.5 py-1 rounded-md bg-slate-950/80 border border-slate-800 text-[11px] font-medium text-slate-300"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="px-2.5 py-2 rounded-lg bg-slate-950/60 border border-slate-800/80 text-xs text-slate-500 italic">
+                        No beverage modifiers attached
+                      </div>
+                    )}
                   </div>
 
                   {/* Staged Items & Modifiers Quick-Assign Tray */}
