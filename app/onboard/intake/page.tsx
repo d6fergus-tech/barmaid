@@ -12,6 +12,9 @@ import React, {
 } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import PipelineHeader, {
+  type PipelineStepNumber,
+} from "@/app/components/PipelineHeader";
 import type {
   InvoiceOcrResponse,
   InvoiceRetailItem,
@@ -2355,7 +2358,8 @@ export default function MultiSourceIntakeStagingPage() {
     const currentProfile = readStoreProfileFromDom();
     const resolvedSlug =
       currentProfile.merchantSlug ||
-      toSlug(currentProfile.dbaName || currentProfile.legalName);
+      toSlug(currentProfile.dbaName || currentProfile.legalName) ||
+      "unassigned";
 
     const finalProfile: StoreProfileData = {
       ...currentProfile,
@@ -2363,7 +2367,25 @@ export default function MultiSourceIntakeStagingPage() {
     };
 
     persistStageToStorage({ profile: finalProfile });
-    router.push("/onboard/rules");
+    router.push(`/onboard/rules?merchant=${encodeURIComponent(resolvedSlug)}`);
+  };
+
+  const handlePipelineNavigateStep = (
+    targetStep: PipelineStepNumber,
+    defaultHref: string
+  ) => {
+    if (targetStep === 1) return;
+    const currentProfile = readStoreProfileFromDom();
+    const resolvedSlug =
+      currentProfile.merchantSlug ||
+      toSlug(currentProfile.dbaName || currentProfile.legalName) ||
+      "unassigned";
+    const finalProfile: StoreProfileData = {
+      ...currentProfile,
+      merchantSlug: resolvedSlug,
+    };
+    persistStageToStorage({ profile: finalProfile });
+    router.push(defaultHref);
   };
 
   const renderAssetThumbnail = (asset: UploadedAsset) => {
@@ -2390,168 +2412,32 @@ export default function MultiSourceIntakeStagingPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-24">
-      {/* Unified Top Command Navigation Bar */}
-      <div className="border-b border-slate-800/80 bg-slate-950/95 backdrop-blur px-6 py-2.5">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Left button: ← Dashboard */}
-          <Link
-            href="/dashboard"
-            className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/50 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
-          >
-            <span>← Dashboard</span>
-          </Link>
-
-          {/* Center badge: Active Client DBA & Slug */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-full px-4 py-1 flex items-center space-x-2 shadow-inner">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                activeSlugBadge && activeSlugBadge !== "unassigned"
-                  ? "bg-amber-400"
-                  : "bg-slate-600"
-              }`}
-            ></span>
-            <span className="text-xs font-bold text-white">
-              {activeDbaBadge ||
-                (activeSlugBadge && activeSlugBadge !== "unassigned"
-                  ? activeSlugBadge
-                  : "Unassigned Client")}
-            </span>
-            <span className="text-xs font-mono text-amber-400">
-              ({activeSlugBadge || "unassigned"})
-            </span>
-          </div>
-
-          {/* Right fast switcher: Client Folder Dropdown & Drawer Trigger */}
-          <div className="flex items-center space-x-2">
-            <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
-              <span className="text-amber-400 text-xs" aria-hidden="true">
-                📁
-              </span>
-              <select
-                aria-label="Fast switch client folder"
-                value={
-                  savedSessions.some(
-                    (s) =>
-                      s.storeProfile.merchantSlug === activeSlugBadge ||
-                      s.id === activeSlugBadge
-                  )
-                    ? activeSlugBadge
-                    : ""
-                }
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === "__new__") {
-                    handleStartNewShop();
-                    return;
-                  }
-                  const found = savedSessions.find(
-                    (s) =>
-                      s.storeProfile.merchantSlug === val || s.id === val
-                  );
-                  if (found) {
-                    handleLoadSavedSession(found);
-                  }
-                }}
-                className="bg-slate-900 text-xs font-semibold text-slate-200 focus:outline-none cursor-pointer pr-1"
-              >
-                <option value="">
-                  {activeSlugBadge && activeSlugBadge !== "unassigned"
-                    ? `Active: ${activeDbaBadge || activeSlugBadge}`
-                    : "Switch Client Folder..."}
-                </option>
-                {savedSessions.map((s) => {
-                  const slug = s.storeProfile.merchantSlug || s.id;
-                  const label =
-                    s.storeProfile.dbaName ||
-                    s.storeProfile.legalName ||
-                    slug;
-                  return (
-                    <option key={s.id} value={slug}>
-                      {label} ({slug})
-                    </option>
-                  );
-                })}
-                <option value="__new__">+ New Client Folder</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Onboarding Wizard Top Header */}
-      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center space-x-4">
-            <Link
-              href="/"
-              className="h-9 w-9 rounded-lg bg-amber-500 flex items-center justify-center font-black text-slate-950 text-xl shadow-md shadow-amber-500/20"
-            >
-              B
-            </Link>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-extrabold tracking-tight text-lg text-white">
-                  BarMaid Onboarding Wizard
-                </span>
-                <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-amber-400 font-mono border border-slate-700">
-                  8-Step Pipeline
-                </span>
-              </div>
-              <p className="text-xs text-slate-400">
-                Multi-Source Document Intake &amp; POS Staging Engine
-              </p>
-            </div>
-          </div>
-
-          {/* Wizard Step Indicators */}
-          <nav
-            aria-label="Onboarding progress"
-            className="flex items-center space-x-2 sm:space-x-3 text-xs font-semibold"
-          >
-            <div className="flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20">
-              <span className="h-5 w-5 rounded-full bg-slate-950 text-amber-400 flex items-center justify-center text-[11px] font-mono">
-                1
-              </span>
-              <span>Step 1: Document Intake</span>
-            </div>
-
-            <span className="text-slate-600 font-mono">→</span>
-
-            <button
-              type="button"
-              onClick={handleContinueToBusinessRules}
-              className="flex items-center space-x-2 px-3.5 py-2 rounded-xl border bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700 transition cursor-pointer"
-            >
-              <span className="h-5 w-5 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center text-[11px] font-mono">
-                2
-              </span>
-              <span>Step 2: Rules &amp; Sizing</span>
-            </button>
-
-            <span className="text-slate-600 font-mono">→</span>
-
-            <div className="flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-500">
-              <span className="h-5 w-5 rounded-full bg-slate-800 text-slate-500 flex items-center justify-center text-[11px] font-mono">
-                3
-              </span>
-              <span>Step 3: POS Connect</span>
-            </div>
-          </nav>
-
-          {/* Active Tenant Pill, Past Sessions / History & Single Consolidated Reset Intake Button */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="bg-slate-950 border border-slate-800 rounded-full px-3.5 py-1.5 flex items-center space-x-2">
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  activeSlugBadge ? "bg-amber-400" : "bg-slate-600"
-                }`}
-              ></span>
-              <span className="text-xs text-slate-400">merchant_slug:</span>
-              <span className="text-xs font-bold text-amber-400 font-mono">
-                {activeSlugBadge || "unassigned"}
-              </span>
-            </div>
-
+      <PipelineHeader
+        activeStep={1}
+        merchantSlug={activeSlugBadge || "unassigned"}
+        merchantDba={
+          activeDbaBadge ||
+          (activeSlugBadge && activeSlugBadge !== "unassigned"
+            ? activeSlugBadge
+            : "Unassigned Client")
+        }
+        savedSessions={savedSessions}
+        onSwitchClient={(val) => {
+          if (val === "__new__") {
+            handleStartNewShop();
+            return;
+          }
+          const found = savedSessions.find(
+            (s) => s.storeProfile.merchantSlug === val || s.id === val
+          );
+          if (found) {
+            handleLoadSavedSession(found);
+          }
+        }}
+        onNavigateStep={handlePipelineNavigateStep}
+        subtitle="Step 1: Multi-Source Document Intake & POS Staging Engine"
+        rightSlot={
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => {
@@ -2559,7 +2445,7 @@ export default function MultiSourceIntakeStagingPage() {
                 setConfirmPurgeAll(false);
                 setIsSessionDrawerOpen(true);
               }}
-              className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer"
+              className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer"
             >
               <span>Past Sessions / History</span>
               <span className="px-1.5 py-0.2 rounded-full bg-slate-950 text-amber-400 font-mono text-[11px]">
@@ -2570,20 +2456,20 @@ export default function MultiSourceIntakeStagingPage() {
             <button
               type="button"
               onClick={handleResetIntake}
-              className="px-3.5 py-1.5 rounded-xl bg-slate-950 hover:bg-rose-950/50 border border-slate-700 hover:border-rose-500/50 text-slate-300 hover:text-rose-300 text-xs font-semibold transition cursor-pointer"
+              className="px-3 py-1 rounded-xl bg-slate-950 hover:bg-rose-950/50 border border-slate-700 hover:border-rose-500/50 text-slate-300 hover:text-rose-300 text-xs font-semibold transition cursor-pointer"
             >
               Reset Intake
             </button>
           </div>
-        </div>
-      </header>
+        }
+      />
 
       {/* Main Content Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 space-y-8">
         {/* Page Title */}
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">
-            Multi-Source Intake &amp; Catalog Staging
+            Step 1: Multi-Source Document Intake &amp; Catalog Staging
           </h1>
           <p className="text-sm text-slate-400 mt-1">
             Ingest physical business licenses, walk-up menu boards, and vendor packing slips (Dillanos, Torani, Big Train) to isolate retail SKUs, modifiers, and operational supplies.
@@ -4025,8 +3911,7 @@ export default function MultiSourceIntakeStagingPage() {
             onClick={handleContinueToBusinessRules}
             className="px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
           >
-            <span>Continue to Business Rules</span>
-            <span>→</span>
+            <span>Continue to Step 2: Business Rules →</span>
           </button>
         </div>
       </footer>

@@ -329,8 +329,8 @@ export default function BarMaidMasterDashboardPage() {
   const hubCards = [
     {
       stepNumber: "01",
-      title: "Document & Menu Intake",
-      href: "/onboard/intake",
+      title: "Step 1: Document Intake",
+      href: `/onboard/intake?merchant=${encodeURIComponent(activeSlug)}`,
       badgeText:
         totalActivePosObjects > 0
           ? `${totalActivePosObjects} Staged Objects`
@@ -347,12 +347,12 @@ export default function BarMaidMasterDashboardPage() {
         { label: "Retail SKUs", value: `${retailCount}` },
         { label: "Supplies Filtered", value: `${suppliesCount}` },
       ],
-      ctaLabel: "Open Document Intake →",
+      ctaLabel: "Open Step 1: Document Intake →",
     },
     {
       stepNumber: "02",
-      title: "Business Rules & Recipe Matrix",
-      href: "/onboard/rules",
+      title: "Step 2: Business Rules",
+      href: `/onboard/rules?merchant=${encodeURIComponent(activeSlug)}`,
       badgeText:
         enabledSizesCount > 0
           ? `${enabledSizesCount} Cup Sizes Active`
@@ -385,12 +385,12 @@ export default function BarMaidMasterDashboardPage() {
               : "Square POS",
         },
       ],
-      ctaLabel: "Configure Business Rules →",
+      ctaLabel: "Open Step 2: Business Rules →",
     },
     {
       stepNumber: "03",
-      title: "Cloud POS Handshake",
-      href: "/onboard/connect",
+      title: "Step 3: POS Connect",
+      href: `/onboard/connect?merchant=${encodeURIComponent(activeSlug)}`,
       badgeText: activePosAuth
         ? `${
             activePosAuth.provider === "clover" ? "Clover" : "Square"
@@ -421,12 +421,12 @@ export default function BarMaidMasterDashboardPage() {
           value: `${activePosAuth?.catalogSnapshot?.modifierListsCount ?? 0}`,
         },
       ],
-      ctaLabel: "Manage POS Connection →",
+      ctaLabel: "Open Step 3: POS Connect →",
     },
     {
       stepNumber: "04",
-      title: "5x4 Register Layout Studio",
-      href: `/?merchant=${encodeURIComponent(activeSlug)}&tab=studio`,
+      title: "Step 4: Ergonomics Studio",
+      href: `/?tab=studio&merchant=${encodeURIComponent(activeSlug)}`,
       badgeText:
         drinksCount + retailCount > 0
           ? `${drinksCount + retailCount} Grid Items`
@@ -449,12 +449,12 @@ export default function BarMaidMasterDashboardPage() {
         { label: "Retail Tiles", value: `${retailCount}` },
         { label: "Quick Modifiers", value: `${Math.min(12, modifiersCount)}` },
       ],
-      ctaLabel: "Launch 5x4 Layout Studio →",
+      ctaLabel: "Open Step 4: Ergonomics Studio →",
     },
     {
       stepNumber: "05",
-      title: "Review & Canonical Sync",
-      href: "/onboard/review",
+      title: "Step 5: Review & Deploy",
+      href: `/onboard/review?merchant=${encodeURIComponent(activeSlug)}`,
       badgeText:
         activeSlug !== "unassigned" && totalActivePosObjects > 0
           ? "Ready to Sync"
@@ -474,7 +474,7 @@ export default function BarMaidMasterDashboardPage() {
           value: `${uploadedDocsCount} File(s)`,
         },
       ],
-      ctaLabel: "Open Review & Sync →",
+      ctaLabel: "Open Step 5: Review & Deploy →",
     },
   ];
 

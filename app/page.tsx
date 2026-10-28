@@ -27,6 +27,7 @@ import {
   getPosAuthStorageKey,
   type PosAuthRecord,
 } from "@/app/onboard/connect/page";
+import PipelineHeader from "@/app/components/PipelineHeader";
 
 const PRE_OPTIMIZE_SNAPSHOT_STORAGE_KEY = "barmaid_pre_optimize_snapshot";
 
@@ -2127,778 +2128,115 @@ export default function BarMaidDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      {/* Unified Top Command Navigation Bar */}
-      <div className="border-b border-slate-800/80 bg-slate-950/95 backdrop-blur px-6 py-2.5">
-        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Left button: ← Master Dashboard */}
-          <Link
-            href="/dashboard"
-            className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/50 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
-          >
-            <span>← Master Dashboard</span>
-          </Link>
-
-          {/* Center badge: Active Client DBA & Slug */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-full px-4 py-1 flex items-center space-x-2 shadow-inner">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                merchantSlug && merchantSlug !== "unassigned"
-                  ? "bg-amber-400"
-                  : "bg-slate-600"
-              }`}
-            ></span>
-            <span className="text-xs font-bold text-white">
-              {merchantDisplayName}
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-16">
+      <PipelineHeader
+        activeStep={4}
+        merchantSlug={merchantSlug}
+        merchantDba={merchantDisplayName}
+        savedSessions={savedSessions}
+        onSwitchClient={handleFastSwitchClient}
+        subtitle="Step 4: 5×4 Register Ergonomics Layout Studio"
+        rightSlot={
+          <div className="flex items-center gap-2">
+            <span className="hidden md:inline-flex items-center px-2.5 py-1 rounded-full bg-slate-900 border border-slate-800 text-[11px] font-mono text-slate-400">
+              <strong className="text-amber-400 mr-1">{stagedItems.length}</strong>
+              Items &middot;{" "}
+              <strong className="text-cyan-400 mx-1">
+                {stagedModifiers.length}
+              </strong>
+              Mods
             </span>
-            <span className="text-xs font-mono text-amber-400">
-              ({merchantSlug})
-            </span>
-          </div>
-
-          {/* Right fast switcher: Client Folder Dropdown */}
-          <div className="flex items-center space-x-2">
-            <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
-              <span className="text-amber-400 text-xs" aria-hidden="true">
-                📁
-              </span>
-              <select
-                aria-label="Fast switch client folder"
-                value={
-                  savedSessions.some(
-                    (s) =>
-                      s.storeProfile.merchantSlug === merchantSlug ||
-                      s.id === merchantSlug
-                  )
-                    ? merchantSlug
-                    : ""
-                }
-                onChange={(e) => handleFastSwitchClient(e.target.value)}
-                className="bg-slate-900 text-xs font-semibold text-slate-200 focus:outline-none cursor-pointer pr-1"
-              >
-                <option value="">
-                  {merchantSlug && merchantSlug !== "unassigned"
-                    ? `Active: ${merchantDisplayName}`
-                    : "Switch Client Folder..."}
-                </option>
-                {savedSessions.map((s) => {
-                  const slug = s.storeProfile.merchantSlug || s.id;
-                  const label =
-                    s.storeProfile.dbaName ||
-                    s.storeProfile.legalName ||
-                    slug;
-                  return (
-                    <option key={s.id} value={slug}>
-                      {label} ({slug})
-                    </option>
-                  );
-                })}
-                <option value="__new__">+ New Client Folder</option>
-              </select>
+            <div className="bg-emerald-950/80 border border-emerald-800/60 text-emerald-300 rounded-full px-3 py-1 text-xs font-medium flex items-center space-x-1.5">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span>{connectedBadgeLabel}</span>
             </div>
           </div>
-        </div>
-      </div>
+        }
+      />
 
-      {/* Top Application Bar */}
-      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center space-x-3">
-            <div className="h-9 w-9 rounded-lg bg-amber-600 flex items-center justify-center font-bold text-slate-950 text-xl shadow-md shadow-amber-600/20">
-              B
-            </div>
+      {/* Main Workspace Body — Step 4: Ergonomics Studio */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-6">
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-extrabold tracking-tight text-lg text-white">
-                  BarMaid
-                </span>
-                <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
-                  B2B POS Utility
-                </span>
-              </div>
-              <p className="text-xs text-slate-400">D6 Digital LLC</p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              href="/dashboard"
-              className="px-3.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-amber-500/40 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
-            >
-              <span>← Master Dashboard</span>
-            </Link>
-            <Link
-              href="/onboard/connect"
-              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 hover:text-white text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
-            >
-              <span>← Step 3: POS Connect</span>
-            </Link>
-          </div>
-        </div>
-
-        {/* Client Badges */}
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="bg-slate-800/80 border border-slate-700/60 rounded-full px-3.5 py-1.5 flex items-center space-x-2">
-            <span className="text-xs text-slate-400">Client:</span>
-            <span className="text-xs font-semibold text-amber-400 font-mono">
-              {merchantSlug}
-            </span>
-          </div>
-          <div className="bg-emerald-950/80 border border-emerald-800/60 text-emerald-300 rounded-full px-3.5 py-1.5 text-xs font-medium flex items-center space-x-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>{connectedBadgeLabel}</span>
-          </div>
-        </div>
-      </header>
-
-      {/* Workflow Navigation */}
-      <nav className="border-b border-slate-800/80 bg-slate-900/50 px-6 py-2">
-        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap gap-2 sm:gap-4">
-            {[
-              { id: "intake", label: "1. Dual-Intake & Staging" },
-              { id: "audit", label: "2. Audit & Scoring" },
-              { id: "studio", label: "3. Ergonomics Studio" },
-              { id: "deploy", label: "4. Review & Deploy" },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as typeof activeTab)}
-                className={`px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-150 cursor-pointer ${
-                  activeTab === tab.id
-                    ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20"
-                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          <span className="text-xs font-mono text-slate-400">
-            Active Catalog:{" "}
-            <strong className="text-amber-400">{stagedItems.length}</strong>{" "}
-            Items &middot;{" "}
-            <strong className="text-cyan-400">{stagedModifiers.length}</strong>{" "}
-            Modifiers
-          </span>
-        </div>
-      </nav>
-
-      {/* Main Workspace Body */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-6">
-        {/* Step 1: Dual-Intake */}
-        {activeTab === "intake" && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
+              <div className="flex flex-wrap items-center gap-2.5">
                 <h1 className="text-2xl font-bold tracking-tight text-white">
-                  Dual-Intake Reconciliation ({merchantSlug})
+                  Step 4: Register Ergonomics Studio
                 </h1>
-                <p className="text-sm text-slate-400 mt-1">
-                  Cross-references physical wall menu boards with your live register catalog to eliminate duplicates and sync accurate pricing.
-                </p>
-              </div>
-              <Link
-                href="/onboard/intake"
-                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-amber-300 transition"
-              >
-                Open 8-Step Onboarding Intake →
-              </Link>
-            </div>
-
-            {/* Live Catalog Metrics */}
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div className="flex items-center space-x-3">
-                  <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-                  <span className="text-xs font-semibold text-slate-300">
-                    Live Square Production Hardware Snapshot:
-                  </span>
-                </div>
-                {loading ? (
-                  <span className="text-xs text-slate-500 animate-pulse">
-                    Querying register state...
-                  </span>
-                ) : error ? (
-                  <span className="text-xs text-rose-400">{error}</span>
-                ) : (
-                  <div className="flex items-center space-x-4 text-xs font-mono">
-                    <span className="text-slate-400">
-                      Items:{" "}
-                      <strong className="text-white">
-                        {squareItems.length}
-                      </strong>
-                    </span>
-                    <span className="text-slate-400">
-                      Categories:{" "}
-                      <strong className="text-amber-400">
-                        {squareCategories.length}
-                      </strong>
-                    </span>
-                    <span className="text-slate-400">
-                      Modifier Sets:{" "}
-                      <strong className="text-white">
-                        {squareModifierLists.length}
-                      </strong>
-                    </span>
-                    <span className="text-slate-400">
-                      Objects:{" "}
-                      <strong className="text-emerald-400">
-                        {squareTotalObjects}
-                      </strong>
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <input
-              type="file"
-              ref={boardInputRef}
-              onChange={(e) => handleFileUpload(e, "board")}
-              accept="image/*"
-              className="hidden"
-            />
-            <input
-              type="file"
-              ref={posInputRef}
-              onChange={(e) => handleFileUpload(e, "pos")}
-              accept="image/*"
-              className="hidden"
-            />
-
-            {/* Dual Dropzone Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Dropzone A: Physical Menu Boards */}
-              <div className="bg-slate-900 border border-slate-800 hover:border-amber-500/50 rounded-2xl p-6 transition flex flex-col justify-between space-y-4">
-                <div>
-                  <div className="flex justify-between items-start">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-amber-400 text-lg">📷</span>
-                      <h2 className="text-base font-bold text-white">
-                        Dropzone A: Physical Menu Boards
-                      </h2>
-                    </div>
-                    <span className="px-2.5 py-0.5 text-xs rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 font-mono">
-                      {boardImages.length} Uploaded
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                    Upload photos of chalkboard menus, walk-up signs, and flavor matrices. Uploading multiple photos accumulates all drinks automatically.
-                  </p>
-                </div>
-
-                {boardImages.length > 0 && (
-                  <div className="flex gap-2 overflow-x-auto py-2">
-                    {boardImages.map((img, i) => (
-                      <div
-                        key={i}
-                        className="h-16 w-16 rounded-lg border border-slate-700 overflow-hidden shrink-0 bg-slate-950"
-                      >
-                        <img
-                          src={img}
-                          alt={`Board ${i + 1}`}
-                          className="h-full w-full object-cover"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <button
-                  disabled={isProcessingOcr}
-                  onClick={() => boardInputRef.current?.click()}
-                  className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2 cursor-pointer"
-                >
-                  <span>+ Add Menu Board Image</span>
-                </button>
-              </div>
-
-              {/* Dropzone B: POS Register Screenshots */}
-              <div className="bg-slate-900 border border-slate-800 hover:border-cyan-500/50 rounded-2xl p-6 transition flex flex-col justify-between space-y-4">
-                <div>
-                  <div className="flex justify-between items-start">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-cyan-400 text-lg">🖥️</span>
-                      <h2 className="text-base font-bold text-white">
-                        Dropzone B: Active POS Screenshot
-                      </h2>
-                    </div>
-                    <span className="px-2.5 py-0.5 text-xs rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-mono">
-                      {posScreenshots.length} Uploaded
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                    Snap a photo of the iPad register screen or export CSV. BarMaid cross-references what is on the register against what is on the wall.
-                  </p>
-                </div>
-
-                {posScreenshots.length > 0 && (
-                  <div className="flex gap-2 overflow-x-auto py-2">
-                    {posScreenshots.map((img, i) => (
-                      <div
-                        key={i}
-                        className="h-16 w-16 rounded-lg border border-slate-700 overflow-hidden shrink-0 bg-slate-950"
-                      >
-                        <img
-                          src={img}
-                          alt={`POS Screen ${i + 1}`}
-                          className="h-full w-full object-cover"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <button
-                  disabled={isProcessingOcr}
-                  onClick={() => posInputRef.current?.click()}
-                  className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-xl text-xs font-semibold transition flex items-center justify-center space-x-2 cursor-pointer"
-                >
-                  <span>+ Add POS Screenshot</span>
-                </button>
-              </div>
-            </div>
-
-            {/* OCR Feedback */}
-            {isProcessingOcr && (
-              <div className="p-4 bg-amber-950/30 border border-amber-500/40 rounded-xl flex items-center space-x-3 animate-pulse">
-                <div className="h-4 w-4 rounded-full border-2 border-amber-400 border-t-transparent animate-spin"></div>
-                <span className="text-xs text-amber-300 font-medium">
-                  {ocrStatusText}
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-mono">
+                  {merchantSlug}
                 </span>
               </div>
-            )}
-
-            {/* Staged Items Tray */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-md space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-base font-bold text-white">
-                    Staged Catalog Buffer ({merchantSlug})
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Unified buffer combining onboarding extractions and live Square items.
-                  </p>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <span className="text-xs font-mono text-slate-400">
-                    <strong className="text-white">{stagedItems.length}</strong>{" "}
-                    Items &middot;{" "}
-                    <strong className="text-amber-400">
-                      {stagedModifiers.length}
-                    </strong>{" "}
-                    Modifiers
-                  </span>
-
-                  <button
-                    onClick={handleFullReconciliation}
-                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-lg transition flex items-center space-x-1.5 shadow-md shadow-amber-500/10 cursor-pointer"
-                  >
-                    <span>✨</span>
-                    <span>Reconcile, Deduplicate &amp; Merge</span>
-                  </button>
-
-                  {stagedItems.length > 0 && (
-                    <button
-                      onClick={() => {
-                        setStagedItems([]);
-                        setStagedModifiers([]);
-                        setBoardImages([]);
-                        setPosScreenshots([]);
-                        setReconcileReport(null);
-                      }}
-                      className="text-xs text-rose-400 hover:underline cursor-pointer"
-                    >
-                      Clear Buffer
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Reconciliation Results */}
-              {reconcileReport && (
-                <div className="p-4 bg-emerald-950/30 border border-emerald-500/40 rounded-xl space-y-2">
-                  <div className="flex items-center space-x-2 text-xs font-bold text-emerald-400">
-                    <span>✓</span>
-                    <span>
-                      Reconciliation Completed Across Square &amp; Photo Uploads:
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                    <div className="bg-slate-950/60 p-2 rounded-lg border border-emerald-800/40">
-                      <span className="text-[10px] uppercase font-mono text-slate-400">
-                        Matched &amp; Merged
-                      </span>
-                      <p className="text-base font-bold text-emerald-300">
-                        {reconcileReport.matched} items
-                      </p>
-                    </div>
-                    <div className="bg-slate-950/60 p-2 rounded-lg border border-emerald-800/40">
-                      <span className="text-[10px] uppercase font-mono text-slate-400">
-                        New from Wall
-                      </span>
-                      <p className="text-base font-bold text-amber-400">
-                        {reconcileReport.newFromWall} items
-                      </p>
-                    </div>
-                    <div className="bg-slate-950/60 p-2 rounded-lg border border-emerald-800/40">
-                      <span className="text-[10px] uppercase font-mono text-slate-400">
-                        Square Retained
-                      </span>
-                      <p className="text-base font-bold text-slate-200">
-                        {reconcileReport.retainedFromSquare} items
-                      </p>
-                    </div>
-                    <div className="bg-slate-950/60 p-2 rounded-lg border border-emerald-800/40">
-                      <span className="text-[10px] uppercase font-mono text-slate-400">
-                        Modifiers Collapsed
-                      </span>
-                      <p className="text-base font-bold text-cyan-300">
-                        {reconcileReport.modifiersCollapsed} duplicates
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {stagedItems.length === 0 ? (
-                <div className="py-8 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-xl">
-                  Buffer empty. Click &quot;Reconcile, Deduplicate &amp; Merge&quot; to inspect your existing Square setup, or upload a menu board image above to stage new drinks.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-64 overflow-y-auto pr-2">
-                  {stagedItems.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3 flex flex-col justify-between"
-                    >
-                      <div>
-                        <div className="flex justify-between items-start">
-                          <span className="text-xs font-bold text-white leading-tight">
-                            {item.name}
-                          </span>
-                          <span
-                            className={`text-[10px] uppercase font-mono px-1.5 py-0.5 rounded ${
-                              item.source === "reconciled"
-                                ? "bg-emerald-950 text-emerald-300 border border-emerald-800/60"
-                                : item.source === "square"
-                                ? "bg-cyan-950 text-cyan-300 border border-cyan-800/60"
-                                : "bg-amber-950 text-amber-300 border border-amber-800/60"
-                            }`}
-                          >
-                            {item.source}
-                          </span>
-                        </div>
-                        <p className="text-[10px] text-slate-400 mt-0.5">
-                          {item.categoryName}
-                        </p>
-                      </div>
-                      <div className="mt-2 pt-2 border-t border-slate-900 flex flex-wrap gap-1">
-                        {item.variations.map((v, vIdx) => (
-                          <span
-                            key={vIdx}
-                            className="text-[10px] font-mono text-amber-300 bg-amber-950/50 px-1.5 py-0.5 rounded"
-                          >
-                            {v.size}: ${v.price.toFixed(2)}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Push Action */}
-              <div className="pt-2 flex flex-wrap items-center justify-between gap-4 border-t border-slate-800/80">
-                <p className="text-xs text-slate-400">
-                  Ready to map all {stagedItems.length} staged items into the elastic multi-page layout matrix.
-                </p>
-                <button
-                  onClick={handleReconcileAndPush}
-                  className="px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
-                >
-                  <span>
-                    Proceed to Studio with All {stagedItems.length} Items
-                  </span>
-                  <span>→</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Step 2: Audit & Scoring */}
-        {activeTab === "audit" && (
-          <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white">
-                Catalog Audit &amp; Friction Diagnostics
-              </h1>
               <p className="text-sm text-slate-400 mt-1">
-                Objective analysis of counter tap friction, modifier redundancies, and screen ergonomics for{" "}
-                <span className="text-amber-400 font-semibold">
-                  {merchantDisplayName}
-                </span>{" "}
-                (<span className="font-mono">{merchantSlug}</span>).
+                Elastic 5×4 counter matrix holding{" "}
+                {stagedItems.length || totalAssignedTiles} catalog items &amp;{" "}
+                {stagedModifiers.length} modifiers across {pages.length} screen
+                pages.
               </p>
             </div>
 
-            {/* Health Meter */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="md:col-span-1 bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col justify-center items-center text-center">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Register Health Score
-                </span>
-                <div className="mt-3 relative flex items-center justify-center">
-                  <div
-                    className={`w-24 h-24 rounded-full border-4 flex items-center justify-center transition-colors ${
-                      isOptimized
-                        ? "border-emerald-500/20 border-t-emerald-400"
-                        : "border-amber-500/20 border-t-amber-500"
-                    }`}
-                  >
-                    <span
-                      className={`text-3xl font-black ${
-                        isOptimized ? "text-emerald-400" : "text-amber-400"
-                      }`}
-                    >
-                      {auditMetrics.healthScore}
-                    </span>
-                  </div>
-                </div>
+            {/* Archetype Quick Switcher, Auto-Optimize & Grid Actions */}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Compact Live Audit Health Score Pill */}
+              <div
+                className={`px-3 py-1.5 rounded-lg border text-xs font-mono flex items-center gap-2 ${
+                  isOptimized
+                    ? "bg-emerald-950/80 border-emerald-500/50 text-emerald-300"
+                    : "bg-slate-900 border-slate-800 text-slate-300"
+                }`}
+              >
                 <span
-                  className={`text-xs font-medium mt-2 px-2 py-0.5 rounded-full ${
-                    isOptimized
-                      ? "text-emerald-300 bg-emerald-500/15 border border-emerald-500/30"
-                      : "text-amber-400/90 bg-amber-500/10"
+                  className={`h-2 w-2 rounded-full ${
+                    isOptimized ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
                   }`}
+                />
+                <span>
+                  Health Score:{" "}
+                  <strong className="text-white">
+                    {auditMetrics.healthScore}/100
+                  </strong>
+                </span>
+                <span className="text-slate-600">|</span>
+                <span
+                  className={
+                    isOptimized
+                      ? "text-emerald-300 font-bold"
+                      : "text-rose-400 font-semibold"
+                  }
                 >
                   {auditMetrics.frictionLabel}
                 </span>
+                <span className="text-slate-600">|</span>
+                <span className="text-amber-300 font-bold">
+                  {auditMetrics.averageBaristaTaps.toFixed(1)} Avg Taps
+                </span>
               </div>
 
-              <div className="md:col-span-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col justify-between">
-                  <span className="text-xs font-medium text-slate-400">
-                    Average Barista Taps
-                  </span>
-                  <p className="text-2xl font-extrabold text-white mt-2">
-                    {auditMetrics.averageBaristaTaps.toFixed(1)} taps
-                  </p>
-                  <p
-                    className={`text-xs mt-1 font-medium ${
-                      auditMetrics.targetMet
-                        ? "text-emerald-400"
-                        : "text-rose-400"
+              {/* Archetype Template Selector */}
+              <div className="flex items-center space-x-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
+                {(
+                  ["fast-cash", "specialty", "color-coded"] as ArchetypeId[]
+                ).map((arch) => (
+                  <button
+                    key={arch}
+                    onClick={() => {
+                      setSelectedArchetype(arch);
+                      applyPreset(arch);
+                    }}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition cursor-pointer ${
+                      selectedArchetype === arch
+                        ? "bg-amber-500 text-slate-950 font-bold"
+                        : "text-slate-400 hover:text-white"
                     }`}
                   >
-                    {auditMetrics.targetMet
-                      ? "Target Met: ≤ 2.0 taps"
-                      : "Target: ≤ 2.0 taps"}
-                  </p>
-                </div>
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col justify-between">
-                  <span className="text-xs font-medium text-slate-400">
-                    Modifier Redundancy
-                  </span>
-                  <p className="text-2xl font-extrabold text-amber-400 mt-2">
-                    {stagedModifiers.length > 0
-                      ? `${stagedModifiers.length} Unified`
-                      : "0 duplicates"}
-                  </p>
-                  <p className="text-xs text-emerald-400 mt-1 font-medium">
-                    Standard Dairy group active
-                  </p>
-                </div>
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col justify-between">
-                  <span className="text-xs font-medium text-slate-400">
-                    Staged Buffer Items
-                  </span>
-                  <p className="text-2xl font-extrabold text-emerald-400 mt-2">
-                    {stagedItems.length} items
-                  </p>
-                  <p className="text-xs text-emerald-400 mt-1 font-medium">
-                    {isOptimized
-                      ? selectedArchetype === "specialty"
-                        ? "Base drink families frequency-sorted"
-                        : selectedArchetype === "color-coded"
-                        ? "Station color blocks velocity-ranked"
-                        : "16oz single-tap anchors mapped"
-                      : "Heuristic sizes mapped"}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Bottom Call to Action & Auto-Optimize Controls */}
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
-              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
-                <div className="flex items-center space-x-2">
-                  <span>Selected Layout Template: </span>
-                  <strong className="text-amber-400 uppercase font-mono">
-                    {toTemplateStorageCode(selectedArchetype)}
-                  </strong>
-                </div>
-
-                {/* Synchronized Template Selector Pills */}
-                <div className="flex items-center space-x-1 bg-slate-950 border border-slate-800 rounded-lg p-1">
-                  {(
-                    ["fast-cash", "specialty", "color-coded"] as ArchetypeId[]
-                  ).map((arch) => (
-                    <button
-                      key={arch}
-                      type="button"
-                      onClick={() => {
-                        setSelectedArchetype(arch);
-                        applyPreset(arch);
-                      }}
-                      className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition cursor-pointer ${
-                        selectedArchetype === arch
-                          ? "bg-amber-500 text-slate-950 font-bold"
-                          : "text-slate-400 hover:text-white"
-                      }`}
-                    >
-                      {arch === "fast-cash"
-                        ? "Fast-Cash"
-                        : arch === "specialty"
-                        ? "Specialty"
-                        : "Color-Zoned"}
-                    </button>
-                  ))}
-                </div>
-
-                {isOptimized && (
-                  <span className="px-2.5 py-1 rounded-full bg-emerald-950/90 border border-emerald-500/50 text-emerald-300 font-semibold text-xs flex items-center space-x-1.5">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-                    <span>
-                      Optimized (Saved{" "}
-                      {Math.max(
-                        0.1,
-                        4.2 - auditMetrics.averageBaristaTaps
-                      ).toFixed(1)}{" "}
-                      taps/drink)
-                    </span>
-                  </span>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                {!isOptimized ? (
-                  <button
-                    type="button"
-                    onClick={handleAutoOptimizeCatalog}
-                    className="px-4 py-2.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/60 text-amber-300 hover:text-amber-200 font-bold text-sm rounded-lg shadow-sm transition flex items-center space-x-2 cursor-pointer"
-                  >
-                    <span>⚡ Auto-Optimize Catalog &amp; Layout</span>
+                    {arch === "fast-cash"
+                      ? "Fast-Cash"
+                      : arch === "specialty"
+                      ? "Specialty"
+                      : "Color-Zoned"}
                   </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleUndoOptimization}
-                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 hover:text-white font-semibold text-sm rounded-lg transition flex items-center space-x-2 cursor-pointer"
-                  >
-                    <span>↺ Undo Optimization</span>
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab("studio")}
-                  className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-lg shadow-md shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
-                >
-                  <span>Proceed to Ergonomics Studio</span>
-                  <span>→</span>
-                </button>
+                ))}
               </div>
-            </div>
-          </div>
-        )}
-
-        {/* Step 3: Ergonomics Studio (Elastic Dynamic Multi-Page Grid) */}
-        {activeTab === "studio" && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <h1 className="text-2xl font-bold tracking-tight text-white">
-                    Register Ergonomics Studio
-                  </h1>
-                  <span className="px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-mono">
-                    {merchantSlug}
-                  </span>
-                </div>
-                <p className="text-sm text-slate-400 mt-1">
-                  Elastic 5×4 counter matrix holding{" "}
-                  {stagedItems.length || totalAssignedTiles} catalog items &amp;{" "}
-                  {stagedModifiers.length} modifiers across {pages.length} screen
-                  pages.
-                </p>
-              </div>
-
-              {/* Archetype Quick Switcher, Auto-Optimize & Grid Actions */}
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Compact Live Audit Health Score Pill */}
-                <div
-                  className={`px-3 py-1.5 rounded-lg border text-xs font-mono flex items-center gap-2 ${
-                    isOptimized
-                      ? "bg-emerald-950/80 border-emerald-500/50 text-emerald-300"
-                      : "bg-slate-900 border-slate-800 text-slate-300"
-                  }`}
-                >
-                  <span
-                    className={`h-2 w-2 rounded-full ${
-                      isOptimized ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
-                    }`}
-                  />
-                  <span>
-                    Health Score:{" "}
-                    <strong className="text-white">
-                      {auditMetrics.healthScore}/100
-                    </strong>
-                  </span>
-                  <span className="text-slate-600">|</span>
-                  <span
-                    className={
-                      isOptimized
-                        ? "text-emerald-300 font-bold"
-                        : "text-rose-400 font-semibold"
-                    }
-                  >
-                    {auditMetrics.frictionLabel}
-                  </span>
-                  <span className="text-slate-600">|</span>
-                  <span className="text-amber-300 font-bold">
-                    {auditMetrics.averageBaristaTaps.toFixed(1)} Avg Taps
-                  </span>
-                </div>
-
-                {/* Archetype Template Selector */}
-                <div className="flex items-center space-x-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
-                  {(
-                    ["fast-cash", "specialty", "color-coded"] as ArchetypeId[]
-                  ).map((arch) => (
-                    <button
-                      key={arch}
-                      onClick={() => {
-                        setSelectedArchetype(arch);
-                        applyPreset(arch);
-                      }}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition cursor-pointer ${
-                        selectedArchetype === arch
-                          ? "bg-amber-500 text-slate-950 font-bold"
-                          : "text-slate-400 hover:text-white"
-                      }`}
-                    >
-                      {arch === "fast-cash"
-                        ? "Fast-Cash"
-                        : arch === "specialty"
-                        ? "Specialty"
-                        : "Color-Zoned"}
-                    </button>
-                  ))}
-                </div>
 
                 {/* Auto-Optimize & Undo Controls */}
                 {!isOptimized ? (
@@ -3653,8 +2991,7 @@ export default function BarMaidDashboard() {
                     )}`}
                     className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center justify-center space-x-2"
                   >
-                    <span>Step 5: Review &amp; Cloud Sync</span>
-                    <span>→</span>
+                    <span>Continue to Step 5: Review &amp; Cloud Sync →</span>
                   </Link>
                   <p className="text-[11px] text-center text-slate-500">
                     Saves all {pages.length} screen pages &amp; routes to canonical
@@ -3674,7 +3011,9 @@ export default function BarMaidDashboard() {
                   ← Master Dashboard
                 </Link>
                 <Link
-                  href="/onboard/connect"
+                  href={`/onboard/connect?merchant=${encodeURIComponent(
+                    merchantSlug
+                  )}`}
                   className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 hover:text-white text-xs font-semibold transition"
                 >
                   ← Back to Step 3: POS Connect
@@ -3698,238 +3037,11 @@ export default function BarMaidDashboard() {
                   )}`}
                   className="px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition shadow-md shadow-amber-500/20 flex items-center space-x-2"
                 >
-                  <span>Proceed to Step 5: Review &amp; Cloud Sync</span>
-                  <span>→</span>
+                  <span>Continue to Step 5: Review &amp; Cloud Sync →</span>
                 </Link>
               </div>
             </div>
-          </div>
-        )}
-
-        {/* Step 4: Deploy */}
-        {activeTab === "deploy" && (
-          <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white">
-                Review &amp; Production Deploy
-              </h1>
-              <p className="text-sm text-slate-400 mt-1">
-                Final verification before publishing optimized button coordinates to{" "}
-                <span className="text-amber-400 font-semibold">
-                  {merchantDisplayName}
-                </span>
-                &apos;s live POS and exporting canonical records to Supabase.
-              </p>
-            </div>
-
-            {/* Pre-Flight Status Checklist */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-md">
-              <h2 className="text-base font-semibold text-white mb-4">
-                Pre-Flight Architecture Verification
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl">
-                  <span className="text-xs text-slate-500 uppercase font-mono">
-                    Client Slug
-                  </span>
-                  <p className="text-base font-bold text-amber-400 font-mono mt-1">
-                    {merchantSlug}
-                  </p>
-                  <span className="text-[11px] text-emerald-400 mt-1 block">
-                    Strictly Scoped
-                  </span>
-                </div>
-                <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl">
-                  <span className="text-xs text-slate-500 uppercase font-mono">
-                    POS Target
-                  </span>
-                  <p className="text-base font-bold text-white font-mono mt-1">
-                    {posAuth?.provider === "clover"
-                      ? "Clover REST v3"
-                      : "Square Cloud v2"}
-                  </p>
-                  <span className="text-[11px] text-emerald-400 mt-1 block">
-                    Production Target
-                  </span>
-                </div>
-                <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl">
-                  <span className="text-xs text-slate-500 uppercase font-mono">
-                    Grid Pages
-                  </span>
-                  <p className="text-base font-bold text-white mt-1">
-                    {pages.length} Pages ({pages.length * 20} Slots)
-                  </p>
-                  <span className="text-[11px] text-slate-400 mt-1 block">
-                    {totalAssignedTiles} Active Buttons
-                  </span>
-                </div>
-                <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl">
-                  <span className="text-xs text-slate-500 uppercase font-mono">
-                    SipPass Handshake
-                  </span>
-                  <p className="text-base font-bold text-emerald-400 mt-1">
-                    Canonical Sync
-                  </p>
-                  <span className="text-[11px] text-emerald-400 mt-1 block">
-                    Ready to Write
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Dual Payload Inspection Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Card 1: Square Register Target */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-md flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                    <div className="flex items-center space-x-2">
-                      <span className="h-2.5 w-2.5 rounded-full bg-amber-400"></span>
-                      <h3 className="font-bold text-white text-base">
-                        POS Register Payload
-                      </h3>
-                    </div>
-                    <span className="text-xs font-mono text-slate-400">
-                      Live API
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-3 leading-relaxed">
-                    Updates the Favorites layout coordinates on{" "}
-                    {merchantDisplayName}&apos;s physical iPad register across
-                    all {pages.length} pages.
-                  </p>
-                  <div className="mt-4 bg-slate-950 border border-slate-800/80 rounded-lg p-3 font-mono text-xs text-slate-300 space-y-1">
-                    <p>
-                      <span className="text-slate-500">endpoint:</span>{" "}
-                      /v2/catalog/batch-upsert
-                    </p>
-                    <p>
-                      <span className="text-slate-500">pages_configured:</span>{" "}
-                      {pages.length} dynamic pages
-                    </p>
-                    <p>
-                      <span className="text-slate-500">
-                        total_active_hotkeys:
-                      </span>{" "}
-                      {totalAssignedTiles}
-                    </p>
-                    <p>
-                      <span className="text-slate-500">target_device:</span>{" "}
-                      iPad Point of Sale
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400">
-                  Target device receives instant silent cloud refresh.
-                </div>
-              </div>
-
-              {/* Card 2: Supabase Canonical Target */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-md flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                    <div className="flex items-center space-x-2">
-                      <span className="h-2.5 w-2.5 rounded-full bg-emerald-400"></span>
-                      <h3 className="font-bold text-white text-base">
-                        Supabase Canonical Export
-                      </h3>
-                    </div>
-                    <span className="text-xs font-mono text-slate-400">
-                      Shared DB
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-3 leading-relaxed">
-                    Pushes the normalized, deduplicated menu to Supabase so SipPass consumer ordering can read the identical drink and modifier catalog.
-                  </p>
-                  <div className="mt-4 bg-slate-950 border border-slate-800/80 rounded-lg p-3 font-mono text-xs text-slate-300 space-y-1">
-                    <p>
-                      <span className="text-slate-500">table:</span>{" "}
-                      public.menu_items
-                    </p>
-                    <p>
-                      <span className="text-slate-500">filter:</span>{" "}
-                      merchant_slug = &apos;{merchantSlug}&apos;
-                    </p>
-                    <p>
-                      <span className="text-slate-500">modifiers:</span>{" "}
-                      standard_dairy_v1
-                    </p>
-                    <p>
-                      <span className="text-slate-500">app_contract:</span>{" "}
-                      Read-only for SipPass
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400">
-                  Ensures zero drift between counter POS and mobile ordering.
-                </div>
-              </div>
-            </div>
-
-            {/* Action Bar & Feedback */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center space-y-4 text-center">
-              {deployState === "idle" && (
-                <>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">
-                      Ready to Deploy ({merchantSlug})
-                    </h3>
-                    <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-                      Click below to broadcast the {pages.length}-page layout to
-                      the counter register and finalize the catalog in Supabase.
-                    </p>
-                  </div>
-                  <button
-                    onClick={handleDeploy}
-                    className="px-8 py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition flex items-center space-x-2 cursor-pointer"
-                  >
-                    <span>🚀 Deploy Layout to POS Cloud</span>
-                  </button>
-                </>
-              )}
-
-              {deployState === "deploying" && (
-                <div className="py-4 space-y-3">
-                  <div className="h-8 w-8 border-3 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-                  <p className="text-sm font-semibold text-amber-400">
-                    {deployMessage}
-                  </p>
-                  <p className="text-xs text-slate-500 font-mono">
-                    Syncing cloud state...
-                  </p>
-                </div>
-              )}
-
-              {deployState === "success" && (
-                <div className="py-2 space-y-3">
-                  <div className="h-12 w-12 rounded-full bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center text-emerald-400 text-2xl mx-auto">
-                    ✓
-                  </div>
-                  <h3 className="text-lg font-bold text-white">
-                    Deployment Complete!
-                  </h3>
-                  <p className="text-xs text-emerald-300 font-medium max-w-md mx-auto">
-                    {deployMessage}
-                  </p>
-                  <div className="pt-2 flex justify-center space-x-3">
-                    <button
-                      onClick={() => setDeployState("idle")}
-                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg border border-slate-700 transition cursor-pointer"
-                    >
-                      Deploy Another Iteration
-                    </button>
-                    <button
-                      onClick={() => setActiveTab("studio")}
-                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-lg transition cursor-pointer"
-                    >
-                      Return to Studio
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        </div>
       </main>
     </div>
   );

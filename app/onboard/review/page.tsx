@@ -20,6 +20,7 @@ import {
   getPosAuthStorageKey,
   type PosAuthRecord,
 } from "@/app/onboard/connect/page";
+import PipelineHeader from "@/app/components/PipelineHeader";
 
 export default function OnboardingReviewAndSyncPage() {
   const router = useRouter();
@@ -166,75 +167,14 @@ export default function OnboardingReviewAndSyncPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-24">
-      {/* Unified Top Command Navigation Bar */}
-      <div className="border-b border-slate-800/80 bg-slate-950/95 backdrop-blur px-6 py-2.5">
-        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Left button: ← Dashboard */}
-          <Link
-            href="/dashboard"
-            className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/50 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
-          >
-            <span>← Dashboard</span>
-          </Link>
-
-          {/* Center badge: Active Client DBA & Slug */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-full px-4 py-1 flex items-center space-x-2 shadow-inner">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                resolvedSlug && resolvedSlug !== "unassigned"
-                  ? "bg-amber-400"
-                  : "bg-slate-600"
-              }`}
-            ></span>
-            <span className="text-xs font-bold text-white">{resolvedDba}</span>
-            <span className="text-xs font-mono text-amber-400">
-              ({resolvedSlug})
-            </span>
-          </div>
-
-          {/* Right fast switcher: Client Folder Dropdown */}
-          <div className="flex items-center space-x-2">
-            <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
-              <span className="text-amber-400 text-xs" aria-hidden="true">
-                📁
-              </span>
-              <select
-                aria-label="Fast switch client folder"
-                value={
-                  savedSessions.some(
-                    (s) =>
-                      s.storeProfile.merchantSlug === resolvedSlug ||
-                      s.id === resolvedSlug
-                  )
-                    ? resolvedSlug
-                    : ""
-                }
-                onChange={(e) => handleFastSwitchClient(e.target.value)}
-                className="bg-slate-900 text-xs font-semibold text-slate-200 focus:outline-none cursor-pointer pr-1"
-              >
-                <option value="">
-                  {resolvedSlug && resolvedSlug !== "unassigned"
-                    ? `Active: ${resolvedDba}`
-                    : "Switch Client Folder..."}
-                </option>
-                {savedSessions.map((s) => {
-                  const slug = s.storeProfile.merchantSlug || s.id;
-                  const label =
-                    s.storeProfile.dbaName ||
-                    s.storeProfile.legalName ||
-                    slug;
-                  return (
-                    <option key={s.id} value={slug}>
-                      {label} ({slug})
-                    </option>
-                  );
-                })}
-                <option value="__new__">+ New Client Folder</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </div>
+      <PipelineHeader
+        activeStep={5}
+        merchantSlug={resolvedSlug}
+        merchantDba={resolvedDba}
+        savedSessions={savedSessions}
+        onSwitchClient={handleFastSwitchClient}
+        subtitle="Step 5: Review & Canonical Cloud Sync"
+      />
 
       {/* Main Content */}
       <main className="flex-1 max-w-6xl w-full mx-auto p-6 space-y-6">
@@ -244,7 +184,7 @@ export default function OnboardingReviewAndSyncPage() {
               Final Pipeline Stage
             </span>
             <h1 className="text-2xl font-bold tracking-tight text-white mt-0.5">
-              Review &amp; Canonical Sync ({resolvedSlug})
+              Step 5: Review &amp; Canonical Sync ({resolvedSlug})
             </h1>
             <p className="text-sm text-slate-400 mt-1">
               Verify reconciled merchant identity, staged catalog counts, and execute canonical batch upsert to POS Cloud and Supabase.
@@ -253,16 +193,10 @@ export default function OnboardingReviewAndSyncPage() {
 
           <div className="flex items-center gap-2.5">
             <Link
-              href="/onboard/connect"
+              href={`/?tab=studio&merchant=${encodeURIComponent(resolvedSlug)}`}
               className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold transition"
             >
-              ← POS Connect
-            </Link>
-            <Link
-              href={`/?merchant=${encodeURIComponent(resolvedSlug)}&tab=studio`}
-              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 text-xs font-bold transition"
-            >
-              Open 5x4 Layout Studio →
+              ← Back to Step 4: Ergonomics Studio
             </Link>
           </div>
         </div>
@@ -405,6 +339,30 @@ export default function OnboardingReviewAndSyncPage() {
           )}
         </div>
       </main>
+
+      {/* Sticky Footer */}
+      <footer className="fixed bottom-0 inset-x-0 z-40 border-t border-slate-800 bg-slate-900/95 backdrop-blur px-6 py-3.5 shadow-2xl">
+        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-4">
+          <Link
+            href={`/?tab=studio&merchant=${encodeURIComponent(resolvedSlug)}`}
+            className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold transition"
+          >
+            ← Back to Step 4: Ergonomics Studio
+          </Link>
+
+          <div className="flex items-center space-x-3">
+            <span className="hidden sm:inline-flex items-center text-xs font-mono text-slate-400">
+              Tenant: <strong className="text-amber-400 ml-1">{resolvedSlug}</strong>
+            </span>
+            <Link
+              href="/dashboard"
+              className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition shadow-md shadow-amber-500/20"
+            >
+              Return to Master Dashboard →
+            </Link>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }

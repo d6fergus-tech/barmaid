@@ -16,6 +16,7 @@ import {
   RULES_CONFIG_STORAGE_KEY,
   type BusinessRulesConfig,
 } from "@/app/onboard/rules/page";
+import PipelineHeader from "@/app/components/PipelineHeader";
 
 export type PosProvider = "square" | "clover";
 export type AuthModalTab = "token" | "oauth";
@@ -450,7 +451,7 @@ export default function OnboardingPosConnectStepPage() {
   };
 
   const handleNavigateToStudio = () => {
-    router.push(`/?merchant=${encodeURIComponent(resolvedSlug)}&tab=studio`);
+    router.push(`/?tab=studio&merchant=${encodeURIComponent(resolvedSlug)}`);
   };
 
   const isSquareConnected = posAuth?.provider === "square";
@@ -458,164 +459,31 @@ export default function OnboardingPosConnectStepPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-24">
-      {/* Unified Top Command Navigation Bar */}
-      <div className="border-b border-slate-800/80 bg-slate-950/95 backdrop-blur px-6 py-2.5">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Left button: ← Dashboard */}
-          <Link
-            href="/dashboard"
-            className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/50 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
-          >
-            <span>← Dashboard</span>
-          </Link>
-
-          {/* Center badge: Active Client DBA & Slug */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-full px-4 py-1 flex items-center space-x-2 shadow-inner">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                resolvedSlug && resolvedSlug !== "unassigned"
-                  ? "bg-amber-400"
-                  : "bg-slate-600"
-              }`}
-            ></span>
-            <span className="text-xs font-bold text-white">{resolvedDba}</span>
-            <span className="text-xs font-mono text-amber-400">
-              ({resolvedSlug})
-            </span>
-          </div>
-
-          {/* Right fast switcher: Client Folder Dropdown */}
-          <div className="flex items-center space-x-2">
-            <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
-              <span className="text-amber-400 text-xs" aria-hidden="true">
-                📁
-              </span>
-              <select
-                aria-label="Fast switch client folder"
-                value={
-                  savedSessions.some(
-                    (s) =>
-                      s.storeProfile.merchantSlug === resolvedSlug ||
-                      s.id === resolvedSlug
-                  )
-                    ? resolvedSlug
-                    : ""
-                }
-                onChange={(e) => handleFastSwitchClient(e.target.value)}
-                className="bg-slate-900 text-xs font-semibold text-slate-200 focus:outline-none cursor-pointer pr-1"
-              >
-                <option value="">
-                  {resolvedSlug && resolvedSlug !== "unassigned"
-                    ? `Active: ${resolvedDba}`
-                    : "Switch Client Folder..."}
-                </option>
-                {savedSessions.map((s) => {
-                  const slug = s.storeProfile.merchantSlug || s.id;
-                  const label =
-                    s.storeProfile.dbaName ||
-                    s.storeProfile.legalName ||
-                    slug;
-                  return (
-                    <option key={s.id} value={slug}>
-                      {label} ({slug})
-                    </option>
-                  );
-                })}
-                <option value="__new__">+ New Client Folder</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Onboarding Wizard Top Header */}
-      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-40 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center space-x-4">
-            <Link
-              href="/"
-              className="h-9 w-9 rounded-lg bg-amber-500 flex items-center justify-center font-black text-slate-950 text-xl shadow-md shadow-amber-500/20"
-            >
-              B
-            </Link>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-extrabold tracking-tight text-lg text-white">
-                  BarMaid Onboarding Wizard
-                </span>
-                <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-amber-400 font-mono border border-slate-700">
-                  8-Step Pipeline
-                </span>
-              </div>
-              <p className="text-xs text-slate-400">
-                Cloud POS OAuth Handshake &amp; Catalog Snapshot
-              </p>
-            </div>
-          </div>
-
-          {/* Wizard Step Indicators */}
-          <nav
-            aria-label="Onboarding progress"
-            className="flex items-center space-x-2 sm:space-x-3 text-xs font-semibold"
-          >
-            <Link
-              href="/onboard/intake"
-              className="flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-emerald-950/70 border border-emerald-700/60 text-emerald-300 hover:bg-emerald-900/60 transition"
-            >
-              <span className="h-5 w-5 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center text-[11px] font-bold">
-                ✓
-              </span>
-              <span>Step 1: Document Intake</span>
-            </Link>
-
-            <span className="text-slate-600 font-mono">→</span>
-
-            <Link
-              href="/onboard/rules"
-              className="flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-emerald-950/70 border border-emerald-700/60 text-emerald-300 hover:bg-emerald-900/60 transition"
-            >
-              <span className="h-5 w-5 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center text-[11px] font-bold">
-                ✓
-              </span>
-              <span>Step 2: Rules &amp; Sizing</span>
-            </Link>
-
-            <span className="text-slate-600 font-mono">→</span>
-
-            <div className="flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20">
-              <span className="h-5 w-5 rounded-full bg-slate-950 text-amber-400 flex items-center justify-center text-[11px] font-mono">
-                3
-              </span>
-              <span>Step 3: POS Connect</span>
-            </div>
-          </nav>
-
-          {/* Active Tenant & Live POS Connection Badges */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="bg-slate-950 border border-slate-800 rounded-full px-3.5 py-1.5 flex items-center space-x-2">
-              <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-              <span className="text-xs text-slate-400">merchant_slug:</span>
-              <span className="text-xs font-bold text-amber-400 font-mono">
-                {resolvedSlug}
-              </span>
-            </div>
-
+      <PipelineHeader
+        activeStep={3}
+        merchantSlug={resolvedSlug}
+        merchantDba={resolvedDba}
+        savedSessions={savedSessions}
+        onSwitchClient={handleFastSwitchClient}
+        subtitle="Step 3: Cloud POS OAuth Handshake & Catalog Snapshot"
+        rightSlot={
+          <>
             {isSquareConnected && (
-              <div className="bg-emerald-950/90 border border-emerald-500/60 text-emerald-300 rounded-full px-3.5 py-1.5 text-xs font-bold flex items-center space-x-2 shadow-sm shadow-emerald-500/10">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <div className="bg-emerald-950/90 border border-emerald-500/60 text-emerald-300 rounded-full px-3 py-1 text-xs font-bold flex items-center space-x-1.5 shadow-sm shadow-emerald-500/10">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
                 <span>Square Connected</span>
               </div>
             )}
 
             {isCloverConnected && (
-              <div className="bg-emerald-950/90 border border-emerald-500/60 text-emerald-300 rounded-full px-3.5 py-1.5 text-xs font-bold flex items-center space-x-2 shadow-sm shadow-emerald-500/10">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <div className="bg-emerald-950/90 border border-emerald-500/60 text-emerald-300 rounded-full px-3 py-1 text-xs font-bold flex items-center space-x-1.5 shadow-sm shadow-emerald-500/10">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
                 <span>Clover Connected</span>
               </div>
             )}
-          </div>
-        </div>
-      </header>
+          </>
+        }
+      />
 
       <main className="flex-1 max-w-5xl w-full mx-auto p-6 space-y-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1291,10 +1159,12 @@ export default function OnboardingPosConnectStepPage() {
       <footer className="fixed bottom-0 inset-x-0 z-40 border-t border-slate-800 bg-slate-900/95 backdrop-blur px-6 py-3.5 shadow-2xl">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <Link
-            href="/onboard/rules"
+            href={`/onboard/rules?merchant=${encodeURIComponent(
+              resolvedSlug
+            )}`}
             className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold transition"
           >
-            ← Back to Step 2: Business Rules &amp; Sizing
+            ← Back to Step 2: Business Rules
           </Link>
 
           <div className="flex items-center space-x-3">
@@ -1310,10 +1180,10 @@ export default function OnboardingPosConnectStepPage() {
               </span>
             )}
             <Link
-              href={`/?merchant=${encodeURIComponent(resolvedSlug)}&tab=studio`}
+              href={`/?tab=studio&merchant=${encodeURIComponent(resolvedSlug)}`}
               className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition shadow-md shadow-amber-500/20"
             >
-              Open Ergonomics Layout Studio →
+              Continue to Step 4: Ergonomics Studio →
             </Link>
           </div>
         </div>

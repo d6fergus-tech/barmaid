@@ -3,6 +3,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import PipelineHeader, {
+  type PipelineStepNumber,
+} from "@/app/components/PipelineHeader";
 import {
   INTAKE_STAGE_STORAGE_KEY,
   toSlug,
@@ -1244,7 +1247,33 @@ export default function OnboardingRulesStepPage() {
       setSavedSessions(updatedArchive);
     }
 
-    router.push("/onboard/connect");
+    router.push(`/onboard/connect?merchant=${encodeURIComponent(resolvedSlug)}`);
+  };
+
+  const handlePipelineNavigateStep = (
+    targetStep: PipelineStepNumber,
+    defaultHref: string
+  ) => {
+    if (targetStep === 2) return;
+    const configPayload: BusinessRulesConfig = {
+      merchant_slug: resolvedSlug,
+      sizeMatrix,
+      modifierPricing,
+      preferredPosPreview: posMode,
+      savedAt: new Date().toISOString(),
+    };
+    try {
+      const serialized = JSON.stringify(configPayload);
+      localStorage.setItem(RULES_CONFIG_STORAGE_KEY, serialized);
+      sessionStorage.setItem(RULES_CONFIG_STORAGE_KEY, serialized);
+    } catch {
+      // Ignore storage quota errors
+    }
+    if (stageData && resolvedSlug && resolvedSlug !== "unassigned") {
+      const updatedArchive = upsertSessionInArchive(stageData, configPayload);
+      setSavedSessions(updatedArchive);
+    }
+    router.push(defaultHref);
   };
 
   // Session Manager Action 1: Load Business
@@ -1378,185 +1407,42 @@ export default function OnboardingRulesStepPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans pb-24">
-      {/* Unified Top Command Navigation Bar */}
-      <div className="border-b border-slate-800/80 bg-slate-950/95 backdrop-blur px-6 py-2.5">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Left button: ← Dashboard */}
-          <Link
-            href="/dashboard"
-            className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/50 text-amber-400 hover:text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
+      <PipelineHeader
+        activeStep={2}
+        merchantSlug={resolvedSlug}
+        merchantDba={resolvedDba}
+        savedSessions={savedSessions}
+        onSwitchClient={(val) => {
+          if (val === "__new__") {
+            handleStartNewShop();
+            return;
+          }
+          const found = savedSessions.find(
+            (s) => s.storeProfile.merchantSlug === val || s.id === val
+          );
+          if (found) {
+            handleLoadSavedSession(found);
+          }
+        }}
+        onNavigateStep={handlePipelineNavigateStep}
+        subtitle="Step 2: Guided Business Rules & Live POS Layout Simulator"
+        rightSlot={
+          <button
+            type="button"
+            onClick={() => {
+              setSavedSessions(readSavedSessionsFromStorage());
+              setConfirmPurgeAll(false);
+              setIsSessionDrawerOpen(true);
+            }}
+            className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer"
           >
-            <span>← Dashboard</span>
-          </Link>
-
-          {/* Center badge: Active Client DBA & Slug */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-full px-4 py-1 flex items-center space-x-2 shadow-inner">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                resolvedSlug && resolvedSlug !== "unassigned"
-                  ? "bg-amber-400"
-                  : "bg-slate-600"
-              }`}
-            ></span>
-            <span className="text-xs font-bold text-white">{resolvedDba}</span>
-            <span className="text-xs font-mono text-amber-400">
-              ({resolvedSlug})
+            <span>Past Sessions / History</span>
+            <span className="px-1.5 py-0.2 rounded-full bg-slate-950 text-amber-400 font-mono text-[11px]">
+              {savedSessions.length}
             </span>
-          </div>
-
-          {/* Right fast switcher: Client Folder Dropdown */}
-          <div className="flex items-center space-x-2">
-            <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
-              <span className="text-amber-400 text-xs" aria-hidden="true">
-                📁
-              </span>
-              <select
-                aria-label="Fast switch client folder"
-                value={
-                  savedSessions.some(
-                    (s) =>
-                      s.storeProfile.merchantSlug === resolvedSlug ||
-                      s.id === resolvedSlug
-                  )
-                    ? resolvedSlug
-                    : ""
-                }
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === "__new__") {
-                    handleStartNewShop();
-                    return;
-                  }
-                  const found = savedSessions.find(
-                    (s) =>
-                      s.storeProfile.merchantSlug === val || s.id === val
-                  );
-                  if (found) {
-                    handleLoadSavedSession(found);
-                  }
-                }}
-                className="bg-slate-900 text-xs font-semibold text-slate-200 focus:outline-none cursor-pointer pr-1"
-              >
-                <option value="">
-                  {resolvedSlug && resolvedSlug !== "unassigned"
-                    ? `Active: ${resolvedDba}`
-                    : "Switch Client Folder..."}
-                </option>
-                {savedSessions.map((s) => {
-                  const slug = s.storeProfile.merchantSlug || s.id;
-                  const label =
-                    s.storeProfile.dbaName ||
-                    s.storeProfile.legalName ||
-                    slug;
-                  return (
-                    <option key={s.id} value={slug}>
-                      {label} ({slug})
-                    </option>
-                  );
-                })}
-                <option value="__new__">+ New Client Folder</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Onboarding Wizard Top Header */}
-      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-40 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center space-x-4">
-            <Link
-              href="/"
-              className="h-9 w-9 rounded-lg bg-amber-500 flex items-center justify-center font-black text-slate-950 text-xl shadow-md shadow-amber-500/20"
-            >
-              B
-            </Link>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-extrabold tracking-tight text-lg text-white">
-                  BarMaid Onboarding Wizard
-                </span>
-                <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-amber-400 font-mono border border-slate-700">
-                  8-Step Pipeline
-                </span>
-              </div>
-              <p className="text-xs text-slate-400">
-                Guided Business Rules &amp; Live POS Layout Simulator
-              </p>
-            </div>
-          </div>
-
-          {/* Wizard Step Indicators */}
-          <nav
-            aria-label="Onboarding progress"
-            className="flex items-center space-x-2 sm:space-x-3 text-xs font-semibold"
-          >
-            <Link
-              href="/onboard/intake"
-              className="flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-emerald-950/70 border border-emerald-700/60 text-emerald-300 hover:bg-emerald-900/60 transition"
-            >
-              <span className="h-5 w-5 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center text-[11px] font-bold">
-                ✓
-              </span>
-              <span>Step 1: Document Intake</span>
-            </Link>
-
-            <span className="text-slate-600 font-mono">→</span>
-
-            <div className="flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20">
-              <span className="h-5 w-5 rounded-full bg-slate-950 text-amber-400 flex items-center justify-center text-[11px] font-mono">
-                2
-              </span>
-              <span>Step 2: Rules &amp; Sizing</span>
-            </div>
-
-            <span className="text-slate-600 font-mono">→</span>
-
-            <button
-              type="button"
-              onClick={handleSaveRulesAndContinue}
-              className="flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:border-slate-700 transition cursor-pointer"
-            >
-              <span className="h-5 w-5 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center text-[11px] font-mono">
-                3
-              </span>
-              <span>Step 3: POS Connect</span>
-            </button>
-          </nav>
-
-          {/* Active Tenant Pill & Past Sessions / History Button */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="bg-slate-950 border border-slate-800 rounded-full px-3.5 py-1.5 flex items-center space-x-2">
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  resolvedSlug && resolvedSlug !== "unassigned"
-                    ? "bg-emerald-400"
-                    : "bg-slate-600"
-                }`}
-              ></span>
-              <span className="text-xs text-slate-400">merchant_slug:</span>
-              <span className="text-xs font-bold text-amber-400 font-mono">
-                {resolvedSlug}
-              </span>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                setSavedSessions(readSavedSessionsFromStorage());
-                setConfirmPurgeAll(false);
-                setIsSessionDrawerOpen(true);
-              }}
-              className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer"
-            >
-              <span>Past Sessions / History</span>
-              <span className="px-1.5 py-0.2 rounded-full bg-slate-950 text-amber-400 font-mono text-[11px]">
-                {savedSessions.length}
-              </span>
-            </button>
-          </div>
-        </div>
-      </header>
+          </button>
+        }
+      />
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 space-y-8">
@@ -2911,7 +2797,9 @@ export default function OnboardingRulesStepPage() {
       <footer className="fixed bottom-0 inset-x-0 z-40 border-t border-slate-800 bg-slate-900/95 backdrop-blur px-6 py-3.5 shadow-2xl">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <Link
-            href="/onboard/intake"
+            href={`/onboard/intake?merchant=${encodeURIComponent(
+              resolvedSlug
+            )}`}
             className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold transition flex items-center space-x-2"
           >
             <span>← Back to Step 1: Document Intake</span>
